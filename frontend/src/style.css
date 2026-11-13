@@ -147,13 +147,12 @@ figure { margin: 0; }
 /* ---------- stopka z logotypami ---------- */
 .credits {
   margin: 0 -56px; padding: 0 56px; border-top: 1px solid var(--line);
-  display: flex; align-items: center; justify-content: center; gap: 88px;
+  display: flex; align-items: center; justify-content: center; gap: 72px;
 }
-.credit { display: flex; align-items: center; gap: 20px; }
-.credit img { height: 56px; max-width: 250px; object-fit: contain; display: block; }
-.credit p { margin: 0; font-size: 15px; color: var(--concrete); line-height: 1.35; }
-.credit p b { display: block; font-size: 19px; font-weight: 600; color: var(--paint); }
-.credit p.right { text-align: right; }
+.credits img { display: block; object-fit: contain; }
+#logoKolo { height: 88px; max-width: 340px; }
+#logoRzeszow { height: 64px; max-width: 340px; }
+.credits-rule { width: 1px; height: 64px; background: var(--line); }
 
 /* ---------- panele obsługi ---------- */
 .panel {
