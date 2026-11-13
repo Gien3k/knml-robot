@@ -12,6 +12,7 @@ import math
 import os
 import time
 
+import cv2
 import numpy as np
 
 from ..adas.gestures import GestureFilter, detect_hand
@@ -177,8 +178,8 @@ class OakMock(Driver):
         world = get_world()
         hub = self.hub
         hub.set_status("oak", "mock", "symulacja", self.message or "Nie wykryto OAK-D – obraz i głębia symulowane")
-        cam = {"w": 960, "h": 540, "hfov": s.oak_hfov_deg, "h_m": s.camera_height_m, "yaw": 0.0, "pitch": 0.0}
-        cam_d = {"w": 640, "h": 360, "hfov": s.oak_hfov_deg, "h_m": s.camera_height_m}
+        cam = {"w": 640, "h": 360, "hfov": s.oak_hfov_deg, "h_m": s.camera_height_m}
+        out_w, out_h = 960, 540
         fx_d = _fx(640, s.oak_hfov_deg)
         filt = GestureFilter()
         period = 1.0 / max(5, s.mock_fps)
@@ -188,21 +189,21 @@ class OakMock(Driver):
             t0 = time.monotonic()
             world.tick()
             snap = world.snapshot()
-            img = world.render(cam, "")  # podgląd jest lustrzany – bez napisu w obrazie
-            jpeg = encode_jpeg(img, 80)
-            depth = world.render_depth(cam_d)
+            ir, depth, people = world.render_ir(cam)
+            img = cv2.resize(ir, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+            jpeg = encode_jpeg(img, 84)
             hand = filt.update(detect_hand(depth, fx_d, s.hand_zmin_m, s.hand_zmax_m))
             dets = []
-            for p in world.camera_people(cam, snap):
-                conf = 0.86 + 0.08 * math.sin(t0 * 0.7 + p["pid"] * 1.7)
+            for p in people:
+                conf = 0.88 + 0.07 * math.sin(t0 * 0.7 + p["pid"] * 1.7)
                 dets.append({"label": "osoba", "conf": round(conf, 2),
-                             "bbox": [round(v, 4) for v in p["bbox"]],
-                             "xyz": [round(v, 3) for v in p["xyz"]]})
+                             "bbox": [round(float(v), 4) for v in p["bbox"]],
+                             "xyz": [round(float(v), 3) for v in p["xyz"]]})
             hub.nn_fps.tick()
             lat = (time.monotonic() - t0) * 1000 + 18.0
             hub.oak = {"detections": dets, "hand": hand, "t": time.monotonic(), "latency_ms": round(lat, 1),
                        "nn": True, "nn_fps": round(hub.nn_fps.value, 1), "sim_phase": snap["phase"]}
-            publish_frame(hub, "oak", jpeg, cam["w"], cam["h"], dets=dets, hand=hand,
+            publish_frame(hub, "oak", jpeg, out_w, out_h, dets=dets, hand=hand, mode="ir",
                           latency_ms=round(lat, 1), seq=i)
             if i % 2 == 0:
                 dimg = colorize_depth(depth)

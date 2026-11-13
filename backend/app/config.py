@@ -46,7 +46,7 @@ def _bool(name: str, default: bool) -> bool:
 class Settings:
     # --- ogólne ---
     hw_mode: str = _str("HW_MODE", "auto").lower()           # auto | mock | real
-    motion_mode: str = _str("MOTION_MODE", "").lower()       # stand | mat | "" (auto)
+    motion_mode: str = _str("MOTION_MODE", "stand").lower()  # stand (podstawka) | mat (mata + klatka)
     static_dir: str = _str("STATIC_DIR", "/app/static")
     assets_dir: str = _str("ASSETS_DIR", "/app/assets")
     detect_interval_s: float = _float("DETECT_INTERVAL_S", 2.0)
@@ -84,12 +84,6 @@ class Settings:
     rover_baud: int = _int("ROVER_BAUD", 115200)
     gimbal_enabled: bool = _bool("GIMBAL_ENABLED", True)
     gimbal_tilt_deg: float = _float("GIMBAL_TILT_DEG", 10.0)
-
-    # --- kamera FPV ---
-    fpv_device: str = _str("FPV_DEVICE", "")
-    fpv_width: int = _int("FPV_WIDTH", 640)
-    fpv_height: int = _int("FPV_HEIGHT", 480)
-    fpv_fps: int = _int("FPV_FPS", 30)
 
     # --- OAK-D Pro ---
     oak_fps: int = _int("OAK_FPS", 30)

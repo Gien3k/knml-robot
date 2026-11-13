@@ -3,169 +3,108 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ADAS 4WD · KN ML</title>
+    <title>ADAS 4WD – Koło Naukowe ML</title>
     <link rel="icon" href="/favicon.svg" />
   </head>
   <body>
     <div id="stage">
-      <!-- ===================== NAGŁÓWEK ===================== -->
-      <header class="hdr">
-        <div class="brand">
-          <svg class="brand-mark" viewBox="0 0 44 44" aria-hidden="true">
-            <rect width="44" height="44" rx="12" fill="#1a1a19" stroke="rgba(255,255,255,.12)" />
-            <circle cx="22" cy="22" r="13" fill="none" stroke="#3987e5" stroke-width="2" opacity=".5" />
-            <circle cx="22" cy="22" r="7" fill="none" stroke="#3987e5" stroke-width="2" />
-            <path d="M22 22 L32 13" stroke="#f0efec" stroke-width="2.4" stroke-linecap="round" />
-            <circle cx="22" cy="22" r="2.6" fill="#f0efec" />
+      <header class="top">
+        <div class="mark">
+          <svg viewBox="0 0 40 40" aria-hidden="true">
+            <rect x="11" y="8" width="18" height="24" rx="4" fill="none" stroke="currentColor" stroke-width="2" />
+            <rect x="6" y="10" width="4" height="8" rx="1.5" fill="currentColor" />
+            <rect x="6" y="22" width="4" height="8" rx="1.5" fill="currentColor" />
+            <rect x="30" y="10" width="4" height="8" rx="1.5" fill="currentColor" />
+            <rect x="30" y="22" width="4" height="8" rx="1.5" fill="currentColor" />
+            <path d="M20 32 v6" stroke="var(--route)" stroke-width="2.4" stroke-linecap="round" />
           </svg>
-          <div>
-            <div class="brand-title">ADAS 4WD<span>Perception Lab</span></div>
-            <div class="brand-sub">Fuzja sensorów · OAK-D Pro · LiDAR D500 · ESP32 · sterowanie gestem</div>
-          </div>
+          <span class="wordmark">ADAS 4WD</span>
+          <span class="tagline">robot, który widzi, rozumie gesty i sam pilnuje bezpieczeństwa</span>
         </div>
-        <div id="adasBadge" class="badge" data-tone="idle"><span id="adasIcon"></span><span id="adasLabel">ŁĄCZENIE…</span></div>
-        <div class="hdr-right">
-          <div id="pills" class="pills"></div>
-          <div id="modeChip" class="chip">—</div>
-          <div id="perfChip" class="chip mono">—</div>
-          <div id="clock" class="clock mono">--:--</div>
-        </div>
+        <div id="sensors" class="sensors" aria-label="Stan czujników"></div>
       </header>
 
-      <!-- ===================== RZĄD GŁÓWNY ===================== -->
-      <main class="row-main">
-        <section class="tile tile-oak">
-          <div class="tile-head">
-            <span class="tile-title">OAK-D Pro · RGB + sieć neuronowa na VPU</span>
-            <span id="oakMeta" class="tile-meta mono">—</span>
+      <main class="views">
+        <figure class="camera">
+          <canvas id="oakCanvas"></canvas>
+          <figcaption class="cam-caption"><span>Kamera OAK-D Pro</span><span id="camMode" class="cam-mode"></span></figcaption>
+          <div class="pip">
+            <canvas id="depthCanvas"></canvas>
+            <span>Głębia ze stereo</span>
           </div>
-          <div class="tile-body">
-            <canvas id="oakCanvas"></canvas>
-            <div class="depth-inset">
-              <canvas id="depthCanvas"></canvas>
-              <span class="inset-label">GŁĘBIA STEREO · IR</span>
-            </div>
-          </div>
-        </section>
+        </figure>
 
-        <section class="tile tile-radar">
-          <div class="tile-head">
-            <span class="tile-title">LiDAR D500 · radar 360° · strefa bezpieczeństwa</span>
-            <span id="radarMeta" class="tile-meta mono">—</span>
-          </div>
-          <div class="radar-wrap">
-            <div class="radar-box"><canvas id="radarCanvas" class="fill"></canvas></div>
-            <aside class="safety-col">
-              <div>
-                <div class="stat-label">Najbliższy obiekt od obrysu robota</div>
-                <div class="stat-hero mono" id="minDist">—</div>
-                <div class="status-line" id="safetyStatus"></div>
-              </div>
-              <div class="zones" id="zones"></div>
-              <div class="mini-chart">
-                <div class="chart-title">Odległość najbliższego obiektu [m] · ostatnie 10 s</div>
-                <canvas id="distChart"></canvas>
-              </div>
-              <div class="geo" id="geoInfo"></div>
-            </aside>
-          </div>
-        </section>
+        <figure class="radar">
+          <figcaption class="radar-caption">
+            <span>LiDAR 360°</span>
+            <span class="radar-hint">Widok z góry. Przód robota jest skierowany do Ciebie.</span>
+          </figcaption>
+          <canvas id="radarCanvas"></canvas>
+          <ul class="legend">
+            <li><i class="sw sw-person"></i>osoba</li>
+            <li><i class="sw sw-fused"></i>osoba rozpoznana przez kamerę</li>
+            <li><i class="sw sw-hand"></i>Twoja dłoń</li>
+            <li><i class="sw sw-route"></i>planowany ruch</li>
+            <li><i class="sw sw-zone"></i><span id="zoneLegend">strefa 25 cm</span></li>
+          </ul>
+        </figure>
       </main>
 
-      <!-- ===================== RZĄD KAFELKÓW ===================== -->
-      <section class="row-tiles">
-        <section class="tile">
-          <div class="tile-head">
-            <span class="tile-title">Kamera FPV</span>
-            <span id="fpvMeta" class="tile-meta mono">—</span>
-          </div>
-          <div class="tile-body"><canvas id="fpvCanvas"></canvas></div>
-        </section>
-
-        <section class="tile">
-          <div class="tile-head">
-            <span class="tile-title">Sterowanie gestem</span>
-            <span id="gestMeta" class="tile-meta mono">—</span>
-          </div>
-          <div class="gesture-body">
-            <div class="g-top">
-              <div class="g-icon" id="gIcon"></div>
-              <div>
-                <div class="g-name" id="gName">Brak dłoni</div>
-                <div class="g-sub" id="gSub">Otwarta dłoń = jazda · pięść = stop · ruch w bok = skręt</div>
-              </div>
-            </div>
-            <div class="bar-row"><span>Pewność</span><div class="bar"><i id="gConf" style="width:0%"></i></div><span class="mono" id="gConfV">—</span></div>
-            <div class="bar-row"><span>Skręt</span><div class="steer"><i id="gSteer" style="left:50%"></i></div><span class="mono" id="gSteerV">—</span></div>
-            <div class="g-metrics mono" id="gMetrics">&nbsp;</div>
-          </div>
-        </section>
-
-        <section class="tile">
-          <div class="tile-head">
-            <span class="tile-title">ML · fuzja · system</span>
-            <span id="mlMeta" class="tile-meta mono">—</span>
-          </div>
-          <dl class="kv" id="mlStats"></dl>
-        </section>
-
-        <section class="tile">
-          <div class="tile-head">
-            <span class="tile-title">Napęd 4WD skid-steer · ESP32</span>
-            <span id="driveMeta" class="tile-meta mono">—</span>
-          </div>
-          <div class="drive-body">
-            <div><canvas id="wheelsCanvas" class="fill"></canvas></div>
-            <div class="drive-chart">
-              <div class="chart-head">
-                <span>Prędkość kół [m/s] · 10 s</span>
-                <span class="legend"><span><i style="background:var(--series-1)"></i>lewe</span><span><i style="background:var(--series-2)"></i>prawe</span></span>
-              </div>
-              <div class="canvas-box"><canvas id="speedChart" class="fill"></canvas></div>
-              <div class="drive-stats" id="driveStats"></div>
-            </div>
-          </div>
-        </section>
-      </section>
-
-      <!-- ===================== NARRATOR ===================== -->
-      <section class="narrator">
-        <span id="narrDot" class="narr-dot"></span>
-        <span id="narrText">Łączenie z robotem…</span>
-        <span class="narr-src" id="narrSrc"></span>
-      </section>
-
-      <!-- ===================== STOPKA ===================== -->
-      <footer class="footer">
-        <span class="footer-side left mono" id="footLeft"></span>
-        <div class="logos">
-          <div class="logo-block">
-            <img id="logoKolo" src="/branding/kolo" alt="Logo Koła Naukowego" />
-            <div class="logo-caption"><b>Koło Naukowe Machine Learning</b><span>Projekt pokazowy · symulator ADAS 4WD</span></div>
-          </div>
-          <div class="logo-divider"></div>
-          <div class="logo-block">
-            <div class="logo-caption right"><span>Projekt wspierany przez</span><b>Miasto Rzeszów</b></div>
-            <img id="logoRzeszow" src="/branding/rzeszow" alt="Logo Miasta Rzeszów" />
-          </div>
+      <section class="readouts">
+        <div class="state" id="stateBlock" data-tone="idle">
+          <h1 id="stateTitle">Łączę się z robotem</h1>
+          <p id="stateText">Za chwilę pojawi się obraz z kamer.</p>
         </div>
-        <span class="footer-side right mono">[H] pomoc</span>
+
+        <div class="gesture">
+          <div class="g-head">
+            <span id="gIcon" class="g-icon"></span>
+            <span id="gName" class="g-name">Brak dłoni</span>
+          </div>
+          <div class="meter"><span>pewność</span><div class="track"><i id="gConf"></i></div><b id="gConfV">–</b></div>
+          <div class="meter"><span>skręt</span><div class="track steer"><i id="gSteer"></i></div><b id="gSteerV">–</b></div>
+        </div>
+
+        <div class="distance" id="distBlock" data-tone="go">
+          <div class="d-value"><span id="dVal">–</span><small id="dUnit"></small></div>
+          <div class="d-label">do najbliższej przeszkody</div>
+          <div class="d-status" id="dStatus"></div>
+        </div>
+
+        <div class="drive">
+          <canvas id="wheelsCanvas"></canvas>
+          <dl class="drive-data">
+            <dt>Koła lewe</dt><dd id="wL">–</dd>
+            <dt>Koła prawe</dt><dd id="wR">–</dd>
+            <dt class="span" id="driveMode">–</dt>
+          </dl>
+        </div>
+      </section>
+
+      <footer class="credits">
+        <div class="credit">
+          <img id="logoKolo" src="/branding/kolo" alt="Logo Koła Naukowego Machine Learning" />
+          <p><b>Koło Naukowe Machine Learning</b>projekt pokazowy</p>
+        </div>
+        <div class="credit">
+          <p class="right">Projekt wspierany przez<b>Miasto Rzeszów</b></p>
+          <img id="logoRzeszow" src="/branding/rzeszow" alt="Logo Miasta Rzeszów" />
+        </div>
       </footer>
 
-      <div id="debug" class="overlay-panel hidden"></div>
-      <div id="help" class="overlay-panel hidden">
-        <h3>Skróty operatora</h3>
+      <aside id="debug" class="panel hidden"></aside>
+      <aside id="help" class="panel hidden">
+        <h2>Obsługa stoiska</h2>
         <table>
-          <tr><td><kbd>Spacja</kbd></td><td>STOP operatora / wznowienie</td></tr>
-          <tr><td><kbd>R</kbd></td><td>Ponowna kalibracja tła LiDAR i wirtualnej klatki</td></tr>
-          <tr><td><kbd>V</kbd></td><td>Widok radaru: od strony widza / od strony robota</td></tr>
-          <tr><td><kbd>M</kbd></td><td>Lustrzane odbicie obrazu OAK</td></tr>
-          <tr><td><kbd>D</kbd></td><td>Panel diagnostyczny (zdarzenia, czujniki)</td></tr>
+          <tr><td><kbd>Spacja</kbd></td><td>Wstrzymaj robota albo wznów pracę</td></tr>
+          <tr><td><kbd>R</kbd></td><td>Naucz się tła stoiska od nowa (LiDAR)</td></tr>
+          <tr><td><kbd>V</kbd></td><td>Obróć radar: od strony widza lub robota</td></tr>
+          <tr><td><kbd>M</kbd></td><td>Włącz lub wyłącz lustrzany obraz kamery</td></tr>
+          <tr><td><kbd>D</kbd></td><td>Pokaż stan czujników i zdarzenia</td></tr>
           <tr><td><kbd>F</kbd></td><td>Pełny ekran</td></tr>
-          <tr><td><kbd>H</kbd></td><td>Ta pomoc</td></tr>
         </table>
-      </div>
-      <div id="toast" class="toast hidden"></div>
+      </aside>
+      <div id="toast" class="toast hidden" role="status"></div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

@@ -56,9 +56,7 @@ class AdasController(threading.Thread):
         self._halt.set()
 
     def motion_mode(self) -> str:
-        if settings.motion_mode in ("stand", "mat"):
-            return settings.motion_mode
-        return "stand" if self.hub.status["rover"].mode == "real" else "mat"
+        return "mat" if settings.motion_mode == "mat" else "stand"
 
     def run(self) -> None:
         period = 1.0 / self.hz
@@ -185,6 +183,11 @@ class AdasController(threading.Thread):
             v, w = -0.6 * vmax, 0.0
             state, reason = "BOUNCE", self._bounce_reason
 
+        if state in ("IDLE", "STOP_GESTURE") and safety.get("state") == "WARN":
+            zones = [z for z, b in blocked.items() if b]
+            state = "BLOCKED"
+            reason = zones[0] if zones and zones[0] in ("front", "rear") else ("side" if zones else "front")
+
         # ---------------- 2. / 1. stop awaryjny ----------------
         if safety.get("state") == "ESTOP":
             v = w = 0.0
@@ -257,36 +260,38 @@ class AdasController(threading.Thread):
 
     @staticmethod
     def _narrate(state, reason, hand, tracks, safety, w) -> str:
+        """Jedno zdanie dla odwiedzających – uzupełnia hasło stanu, z ich perspektywy."""
         md = safety.get("min_dist")
-        cm = f"{md * 100:.0f} cm" if md is not None else "?"
+        cm = f"{md * 100:.0f} cm" if md is not None else "bardzo blisko"
         n = sum(1 for t in tracks if t.get("w", 0) >= 0.15)   # szerokość sylwetki, nie dłoń
-        turn = ""
-        if abs(w) > 0.05:
-            # strzałki w perspektywie widza (obraz lustrzany): w<0 (prawo robota) = lewa widza
-            turn = " i skręcam ←" if w < 0 else " i skręcam →"
         if state == "OPERATOR_STOP":
-            return "Zatrzymano przez operatora. Naciśnij spację, aby wznowić."
+            return "Obsługa stoiska wstrzymała robota. Koła stoją do odwołania."
         if state == "ESTOP":
-            return f"STOP AWARYJNY! Obiekt {cm} od robota – LiDAR nadpisał gesty."
+            return f"Coś jest {cm} od robota. LiDAR ma pierwszeństwo przed gestami, więc koła stanęły."
         if state == "BOUNCE":
             if reason == "geofence":
-                return "Granica wirtualnej klatki – odbijam z powrotem do środka strefy."
-            return "Odbicie od przeszkody – cofam."
+                return "Robot dotknął granicy strefy na macie i cofa się do środka."
+            return "Przeszkoda z przodu, więc robot odsuwa się do tyłu."
         if state == "GEOFENCE":
-            return "Granica wirtualnej klatki – nie wyjadę poza strefę bezpieczeństwa."
+            return "Dalej jest granica strefy bezpieczeństwa na macie. Robot może tylko skręcać."
         if state == "BLOCKED":
             where = {"front": "z przodu", "rear": "z tyłu", "side": "z boku"}.get(reason, "")
-            return f"Przeszkoda {where} ({cm}) – blokuję ruch w tym kierunku."
+            return f"Przeszkoda {where}, {cm} od robota. Ruch w tę stronę jest zablokowany."
         if state == "LOCKED":
             return reason
         if state == "MANUAL":
-            return "Test napędu sterowany przez operatora."
+            return "Obsługa stoiska testuje silniki."
         if state == "DRIVE":
-            return f"Otwarta dłoń – jadę naprzód{turn}."
+            if abs(w) > 0.05:
+                # w<0: robot skręca w swoje prawo, czyli w lewą stronę stojącego przed nim widza
+                side = "lewą" if w < 0 else "prawą"
+                return f"Dłoń jest przesunięta w bok, więc robot skręca w Twoją {side} stronę."
+            return "Otwarta dłoń to gaz. Przesuń ją w bok, żeby skręcić, albo zaciśnij pięść."
         if state == "STOP_GESTURE":
-            return "Pięść – zatrzymuję koła."
+            return "Pięść zatrzymuje koła. Otwórz dłoń, żeby ruszyć."
         if hand:
-            return "Widzę dłoń. Rozłóż palce, żeby ruszyć, albo zaciśnij pięść, żeby zatrzymać."
+            return "Widzę dłoń. Rozłóż palce, żeby ruszyć, albo zaciśnij pięść."
         if n:
-            return f"Widzę {plural_osoba(n)}. Podejdź i wyciągnij otwartą dłoń w stronę kamery."
-        return "Podejdź bliżej i pokaż otwartą dłoń, żeby ruszyć robotem."
+            who = "osobę" if n == 1 else plural_osoba(n)
+            return f"Widzę {who} przy stoisku. Stań przed robotem i wyciągnij rękę w stronę kamery."
+        return "Stań przed robotem i wyciągnij rękę w stronę kamery. Zaciśnięta pięść zatrzymuje koła."

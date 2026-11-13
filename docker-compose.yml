@@ -17,8 +17,8 @@ services:
     # Lista devices: wywala start kontenera, gdy urządzenia nie ma. Zamiast tego:
     #  - privileged: dostęp do wszystkich urządzeń (USB, tty, video),
     #  - /dev montowany w całości: urządzenia podpięte PO starcie kontenera
-    #    (hot-plug: OAK-D, LiDAR /dev/ttyUSB*, ESP32 /dev/ttyACM* / ttyAMA0,
-    #    kamera /dev/video*) od razu pojawiają się w środku. OAK-D zmienia
+    #    (hot-plug: OAK-D, LiDAR /dev/ttyUSB*, ESP32 /dev/ttyACM* / ttyAMA0)
+    #    od razu pojawiają się w środku. OAK-D zmienia
     #    VID/PID przy bootowaniu (/dev/bus/usb), co też obsługuje ten mount.
     privileged: true
     volumes:

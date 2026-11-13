@@ -17,7 +17,6 @@ import time
 from .config import settings
 from .drivers import detect
 from .drivers.common import LABELS, Driver
-from .drivers.fpv import FpvMock, FpvReal
 from .drivers.lidar import LidarMock, LidarReal
 from .drivers.oak import OakMock, OakReal
 from .drivers.rover import RoverMock, RoverReal
@@ -100,7 +99,7 @@ class Supervisor(threading.Thread):
             elif mode == "mock":
                 msg = "Tryb symulacji (HW_MODE=mock)"
             factory = {"oak": lambda: OakMock(hub, msg), "lidar": lambda: LidarMock(hub, self.proc, msg),
-                       "rover": lambda: RoverMock(hub, msg), "fpv": lambda: FpvMock(hub, msg)}[name]
+                       "rover": lambda: RoverMock(hub, msg)}[name]
             self._start(name, factory())
 
     def _port_allowed(self, kind: str, port: str) -> bool:
@@ -140,21 +139,3 @@ class Supervisor(threading.Thread):
                     self._lost.pop("rover", None)
                     break
                 self._port_backoff[("rover", port)] = time.monotonic() + 12.0
-
-        # Kamera FPV (UVC)
-        if not self._alive("fpv", "real"):
-            cams = [{"device": s.fpv_device}] if s.fpv_device else detect.video_candidates()
-            for c in cams:
-                dev = c["device"]
-                if not self._port_allowed("fpv", dev):
-                    continue
-                import cv2
-                cap = cv2.VideoCapture(dev, cv2.CAP_V4L2)
-                ok = cap.isOpened() and cap.read()[0]
-                cap.release()
-                if ok:
-                    log.info("Wykryto kamerę FPV %s (%s)", dev, c.get("name", ""))
-                    self._start("fpv", FpvReal(hub, dev))
-                    self._lost.pop("fpv", None)
-                    break
-                self._port_backoff[("fpv", dev)] = time.monotonic() + 10.0

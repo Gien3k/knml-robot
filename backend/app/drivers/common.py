@@ -12,7 +12,7 @@ from ..hub import Hub
 
 log = logging.getLogger("drivers")
 
-LABELS = {"oak": "OAK-D Pro", "lidar": "LiDAR D500", "rover": "ESP32 / 4WD", "fpv": "Kamera FPV"}
+LABELS = {"oak": "OAK-D Pro", "lidar": "LiDAR D500", "rover": "Napęd 4WD (ESP32)"}
 
 
 class Driver(threading.Thread):

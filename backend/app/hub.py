@@ -103,11 +103,11 @@ class SensorStatus:
 
 
 class Hub:
-    SENSORS = ("oak", "lidar", "rover", "fpv")
+    SENSORS = ("oak", "lidar", "rover")
 
     def __init__(self) -> None:
         self.lock = threading.RLock()
-        self.video: dict[str, LatestSlot] = {k: LatestSlot() for k in ("oak", "depth", "fpv")}
+        self.video: dict[str, LatestSlot] = {k: LatestSlot() for k in ("oak", "depth")}
         self.scan_slot = LatestSlot()
         self.status: dict[str, SensorStatus] = {k: SensorStatus() for k in self.SENSORS}
 

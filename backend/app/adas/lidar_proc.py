@@ -253,6 +253,23 @@ class LidarProcessor:
                 continue
             c = p.mean(0)
             out.append((float(c[0]), float(c[1]), width))
+        # ręka wyciągnięta przed tułowiem zasłania jego środek – echo ciała rozpada się na
+        # dwa wąskie kawałki w tej samej odległości; scalamy je z powrotem w jedną sylwetkę
+        merged = True
+        while merged:
+            merged = False
+            for i in range(len(out)):
+                for j in range(i + 1, len(out)):
+                    (x1, y1, w1), (x2, y2, w2) = out[i], out[j]
+                    d = math.hypot(x1 - x2, y1 - y2)
+                    if abs(math.hypot(x1, y1) - math.hypot(x2, y2)) < 0.15 and d < 0.45:
+                        ws = w1 + w2 + 1e-6
+                        out[i] = ((x1 * w1 + x2 * w2) / ws, (y1 * w1 + y2 * w2) / ws, min(0.9, d + (w1 + w2) / 2))
+                        out.pop(j)
+                        merged = True
+                        break
+                if merged:
+                    break
         return out
 
     def _safety(self, pts, valid, fg, now, mat) -> dict:

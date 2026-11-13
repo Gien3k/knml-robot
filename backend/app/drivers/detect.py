@@ -1,4 +1,4 @@
-"""Autodetekcja sprzętu: USB (sysfs), porty szeregowe (sondowanie protokołu), kamery V4L2.
+"""Autodetekcja sprzętu: USB (sysfs) i porty szeregowe (sondowanie protokołu).
 
 LiDAR i ESP32 często mają ten sam konwerter USB-UART (CP2102/CH340), więc nie
 rozróżniamy ich po VID/PID, tylko po tym, co "mówią":
@@ -121,19 +121,6 @@ def probe_rover(port: str, baud: int, timeout: float = 2.0) -> bool:
             pass
 
 
-def video_candidates() -> list[dict]:
-    """Kamery UVC na USB (pomija węzły metadanych i wewnętrzne węzły ISP/kodeków RPi 5)."""
-    out = []
-    for p in sorted(glob.glob("/sys/class/video4linux/video*"), key=lambda s: int(s.rsplit("video", 1)[1] or 0)):
-        name = _read(os.path.join(p, "name"))
-        index = _read(os.path.join(p, "index"), "0")
-        dev = os.path.realpath(os.path.join(p, "device"))
-        if "/usb" not in dev or index != "0":
-            continue
-        out.append({"device": "/dev/" + os.path.basename(p), "name": name})
-    return out
-
-
 _dai = None
 _dai_error: str | None = None
 
@@ -170,6 +157,5 @@ def diagnostics() -> dict:
         "usb": usb_devices(),
         "serial": serial_info(),
         "serial_candidates": serial_candidates(),
-        "video": video_candidates(),
         "depthai": getattr(dai, "__version__", None) if dai else _dai_error,
     }

@@ -1,4 +1,5 @@
 export type Mode = "real" | "mock" | "off";
+export type SensorKey = "oak" | "lidar" | "rover";
 
 export interface SensorStatus { mode: Mode; detail: string; message: string; fps: number; since: number }
 
@@ -12,10 +13,11 @@ export interface Hand {
 
 export interface Track { id: number; x: number; y: number; vx: number; vy: number; w: number; age: number; d: number }
 
+type Zones<T> = Record<"front" | "rear" | "left" | "right", T>;
+
 export interface Safety {
   state: "OK" | "WARN" | "ESTOP"; min_dist: number | null; min_angle: number | null;
-  zones: Record<"front" | "rear" | "left" | "right", number | null>;
-  blocked: Record<"front" | "rear" | "left" | "right", boolean>;
+  zones: Zones<number | null>; blocked: Zones<boolean>;
   safety_m: number; estop_m: number; intrusions: number;
 }
 
@@ -32,13 +34,12 @@ export interface Adas {
 
 export interface State {
   type: "state"; t: number;
-  sensors: Record<"oak" | "lidar" | "rover" | "fpv", SensorStatus>;
+  sensors: Record<SensorKey, SensorStatus>;
   oak: { detections: Detection[] | null; hand: Hand | null; latency_ms: number | null; nn: boolean; nn_fps: number; sim_phase?: string };
   lidar: { tracks: Track[] | null; safety: Safety | null; pose: Pose | null; hz: number };
   drive: { wheels: Record<"fl" | "rl" | "fr" | "rr", Wheel>; source: string; battery_v: number | null;
            gimbal: { pan: number; tilt: number } | null; imu: Record<string, number> | null };
   adas: Adas; estop: boolean;
-  perf: { cpu?: number; temp_c?: number | null; mem_used_pct?: number; cores?: number };
   events: { t: number; level: string; msg: string }[];
 }
 
@@ -50,4 +51,4 @@ export interface Config {
   max_speed: number; mat_max_speed: number;
 }
 
-export interface FrameHeader { ts: number; w: number; h: number; dets?: Detection[]; hand?: Hand | null; latency_ms?: number; pan?: number; tilt?: number }
+export interface FrameHeader { ts: number; w: number; h: number; dets?: Detection[]; hand?: Hand | null; mode?: string }

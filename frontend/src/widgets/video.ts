@@ -90,10 +90,10 @@ export class VideoTile {
     if (this.stale) {
       ctx.fillStyle = "rgba(13,13,13,0.72)";
       ctx.fillRect(0, 0, w, h);
-      ctx.fillStyle = "#c3c2b7";
-      ctx.font = "600 16px Inter Variable, system-ui";
+      ctx.fillStyle = "#9a9d9f";
+      ctx.font = `500 ${w > 400 ? 20 : 13}px Barlow, system-ui`;
       ctx.textAlign = "center";
-      ctx.fillText(`${this.opts.label}: brak sygnału – łączenie…`, w / 2, h / 2);
+      ctx.fillText(`${this.opts.label}: czekam na obraz…`, w / 2, h / 2);
       ctx.textAlign = "left";
     }
   }

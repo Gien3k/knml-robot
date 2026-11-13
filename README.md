@@ -8,8 +8,7 @@ Dashboard w trybie kiosku pokazuje wszystko na żywo na dużym monitorze.
 |---|---|
 | **OAK-D Pro** | detekcja osób z pozycją 3D (MobileNet-SSD na VPU), głębia stereo z projektorem IR, gesty dłoni |
 | **LiDAR D500** | radar 360°, śledzenie osób, strefy bezpieczeństwa, wirtualna klatka (ICP) |
-| **Kamera FPV** | widok z robota, głowica pan-tilt śledzi najbliższą osobę |
-| **ESP32 (4WD)** | napęd skid-steer (lewa/prawa strona), telemetria, sterowanie głowicą |
+| **ESP32 (4WD)** | napęd skid-steer: 4 koła sterowane parami (lewa/prawa strona), telemetria, głowica pan-tilt śledzi najbliższą osobę |
 
 **Gesty:** otwarta dłoń = jazda, pięść = stop, przesunięcie dłoni w bok = skręt.
 **Priorytety bezpieczeństwa:** STOP operatora > STOP AWARYJNY LiDAR (< 12 cm) > blokada kierunku (< 25 cm) + odbicie > wirtualna klatka > gest.
@@ -26,7 +25,9 @@ docker compose up --build
 Dashboard: **http://localhost:8000**
 
 Bez podłączonego sprzętu wszystko działa od razu w **trybie symulacji**. Wspólny wirtualny świat stoiska
-zawiera ludzi, „kierowcę” wykonującego gesty i dłoń wkładaną pod robota. Każdy sensor jest wykrywany osobno
+zawiera ludzi, „kierowcę” wykonującego gesty i dłoń wkładaną pod robota. Kamera jest symulowana fizycznie:
+postacie z brył 3D trafiają do bufora głębi, z którego powstaje mapa głębi (na niej działa prawdziwy
+klasyfikator gestów) oraz obraz w podczerwieni, taki jak z oświetlacza OAK-D Pro. Każdy sensor jest wykrywany osobno
 co 2 s: po podłączeniu kabla prawdziwe dane same zastępują symulację, a po odłączeniu wraca symulacja
 (hot-plug, bez restartu kontenera).
 
@@ -39,12 +40,12 @@ Najważniejsze zmienne (pełna lista w [.env.example](.env.example)):
 | Zmienna | Domyślnie | Opis |
 |---|---|---|
 | `HW_MODE` | `auto` | `auto` – sprzęt + symulacja brakujących, `mock` – tylko symulacja, `real` – tylko sprzęt |
-| `MOTION_MODE` | *(puste)* | `stand` – podstawka, koła w powietrzu · `mat` – ruchy na macie z wirtualną klatką · puste: `mat` w symulacji, `stand` z prawdziwym ESP32 |
+| `MOTION_MODE` | `stand` | `stand` – robot na podstawce, koła kręcą się w powietrzu; `mat` – ruchy na macie z wirtualną klatką |
 | `SAFETY_DISTANCE_M` | `0.25` | blokada ruchu w kierunku przeszkody (od obrysu robota) |
 | `ESTOP_DISTANCE_M` | `0.12` | stop awaryjny |
 | `GEOFENCE_RADIUS_M` | `0.20` | promień wirtualnej klatki |
 | `MAX_WHEEL_SPEED` / `MAT_MAX_WHEEL_SPEED` | `0.30` / `0.10` | limity prędkości kół [m/s] |
-| `LIDAR_PORT`, `ROVER_PORT`, `FPV_DEVICE` | auto | wymuszenie portów, gdy autodetekcja nie wystarcza |
+| `LIDAR_PORT`, `ROVER_PORT` | auto | wymuszenie portów, gdy autodetekcja nie wystarcza |
 
 ## Raspberry Pi 5 (docelowo)
 
@@ -94,7 +95,7 @@ przekazać do WSL2 przez [usbipd-win](https://github.com/dorssel/usbipd-win)
 | `POST /api/recalibrate` | kalibracja tła LiDAR / klatki |
 | `POST /api/drive/test` `{"left":0.1,"right":0.1,"duration":2}` | test silników (zabezpieczenia nadal działają) |
 | `WS /ws/telemetry` | stan 20 Hz + skany LiDAR 10 Hz (JSON) |
-| `WS /ws/video/{oak,depth,fpv}` | binarnie: `[u32 długość][nagłówek JSON][JPEG]`, tylko najnowsza klatka |
+| `WS /ws/video/{oak,depth}` | binarnie: `[u32 długość][nagłówek JSON][JPEG]`, tylko najnowsza klatka |
 
 ## Logotypy
 
@@ -106,7 +107,7 @@ a dashboard podmieni logotypy w ciągu ~20 s bez przebudowy. Najlepiej sprawdzaj
 ```
 OAK-D Pro  --USB3--> [oak]    detekcja 3D na VPU, MJPEG z VPU, głębia -> gesty  --+
 LiDAR D500 --UART--> [lidar]  pakiety 0x54, tło, ICP, tory, strefy             --+--> Hub (najnowszy stan)
-Kamera     --USB---> [fpv]    MJPEG bez dekodowania                          --+        |
+                                                                                        |
 ESP32 <--UART JSON-- [rover]  {"T":1,...} 20 Hz, głowica {"T":133}, telemetria <--- [ADAS 20 Hz] <-+
                                                                                        |
                      FastAPI: /ws/telemetry, /ws/video/*  --> Chromium --kiosk (Vite + TS + Tailwind)
@@ -116,7 +117,7 @@ ESP32 <--UART JSON-- [rover]  {"T":1,...} 20 Hz, głowica {"T":133}, telemetria 
 - [backend/app/adas/](backend/app/adas/) – gesty z głębi, przetwarzanie LiDAR (ICP, tory, strefy), kontroler ADAS
 - [backend/app/sim/world.py](backend/app/sim/world.py) – wspólny świat symulacji
 - [backend/app/supervisor.py](backend/app/supervisor.py) – hot-plug i fallback do symulacji
-- [frontend/src/](frontend/src/) – dashboard (scena 1920×1080 skalowana do monitora)
+- [frontend/src/](frontend/src/) – ekran stoiska (scena 1920×1080 skalowana do monitora, krój Barlow)
 
 Rozwój frontendu z hot-reload: `cd frontend && npm install && npm run dev` (proxy do backendu na :8000).
 
