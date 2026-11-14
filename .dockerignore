@@ -1,7 +1,8 @@
 **/node_modules
 **/__pycache__
-frontend/dist
+**/.pytest_cache
 .git
 .env
-assets
 scripts
+assets/warianty
+frontend/dist

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Autonomiczny łazik – styl 3: pojedynek</title>
+  <link rel="icon" href="../../favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../shared/base.css">
+  <link rel="stylesheet" href="v3.css">
+</head>
+<body>
+  <div id="stage">
+    <header class="top">
+      <h1>Człowiek kontra AI</h1>
+      <p>Kto zareaguje szybciej: Ty czy robot?</p>
+    </header>
+
+    <section class="side human">
+      <div class="who"><b>Ty</b><span>sterujesz dłonią</span></div>
+      <div class="frame cam-box"><div class="cam-inner"><img id="cam" alt=""><canvas id="ov"></canvas></div></div>
+      <div class="side-state" id="youState">–</div>
+    </section>
+
+    <section class="score" aria-live="polite">
+      <div class="score-label" id="scoreLabel">Robot zatrzymał się w</div>
+      <div class="score-value"><b id="score">–</b><span>s</span></div>
+      <div class="bars">
+        <div class="bar ai"><span class="bar-name">Robot (AI)</span><div class="bar-track"><i id="barAi"></i></div><span class="bar-val" id="barAiV">–</span></div>
+        <div class="bar human"><span class="bar-name">Człowiek, średnio</span><div class="bar-track"><i id="barHuman"></i></div><span class="bar-val">0,25 s</span></div>
+      </div>
+      <div class="facts">
+        <div><b id="record">–</b><span>rekord dnia</span></div>
+        <div><b id="count">–</b><span id="countLbl">zatrzymań dziś</span></div>
+      </div>
+    </section>
+
+    <section class="side ai">
+      <div class="who"><b>AI</b><span>pilnuje radarem 360°</span></div>
+      <div class="frame"><canvas id="radar"></canvas></div>
+      <div class="side-state" id="aiState">–</div>
+    </section>
+
+    <p class="how" id="how">Otwarta dłoń przy kamerze to gaz. Włóż rękę przy robocie i sprawdź, kto szybszy.</p>
+
+    <footer class="credits">
+      <img id="logoKolo" src="/branding/kolo" alt="Koło Naukowe Machine Learning Politechniki Rzeszowskiej" draggable="false">
+      <i class="rule" aria-hidden="true"></i>
+      <img id="logoRzeszow" src="/branding/rzeszow" alt="Rzeszów – stolica innowacji" draggable="false">
+    </footer>
+  </div>
+  <script type="module" src="v3.js"></script>
+</body>
+</html>

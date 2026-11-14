@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#16181a">
+  <title>Autonomiczny łazik – Koło Naukowe ML</title>
+  <link rel="icon" href="../../favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="../../fonts/barlow-latin-500-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../../fonts/barlow-condensed-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="stage">
+    <!-- nagłówek jak na drugim monitorze stoiska: ikonka + tytuł, wyśrodkowane -->
+    <header class="top">
+      <div class="mark">
+        <svg viewBox="0 0 40 40" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 12 L20 20 L10 28 M10 12 L10 28 M20 20 H31"/></g><circle cx="10" cy="12" r="3.2" fill="currentColor"/><circle cx="10" cy="28" r="3.2" fill="currentColor"/><circle cx="20" cy="20" r="3.2" fill="currentColor"/><circle cx="31" cy="20" r="3.6" fill="var(--route)"/></svg>
+        <span class="wordmark">Człowiek kontra AI <span class="wordmark__sep">·</span> Autonomiczny łazik</span>
+      </div>
+    </header>
+
+    <main class="view">
+      <section class="tiles">
+        <!-- 1. kamera -->
+        <article class="tile" id="tileCam">
+          <div class="cap"><b>Kamera głębi</b><span class="cap__dim">OAK-D Pro</span></div>
+          <div class="tile__viz">
+            <div class="video">
+              <div class="video-inner" id="videoInner">
+                <img id="stream" alt="">
+                <canvas id="overlay"></canvas>
+              </div>
+              <span class="badge" id="camBadge" hidden></span>
+              <div class="waiting" id="camWaiting"><i class="spinner"></i><span>Czekam na kamerę</span></div>
+            </div>
+          </div>
+          <div class="tile__body">
+            <h2 class="tile__title">Steruj dłonią</h2>
+            <p class="tile__line">Otwarta dłoń to gaz, pięść jazda do tyłu.<br>Im bliżej kamery, tym szybciej.</p>
+            <span class="pill" id="pillCam" data-tone="muted"><i></i><span>Nie widzę dłoni</span></span>
+          </div>
+        </article>
+
+        <!-- 2. radar -->
+        <article class="tile" id="tileRadar">
+          <div class="cap"><b>Radar 360°</b><span class="cap__dim">LiDAR D500</span></div>
+          <div class="tile__viz">
+            <canvas id="map"></canvas>
+            <div class="waiting" id="mapWaiting"><i class="spinner"></i><span>Czekam na radar</span></div>
+          </div>
+          <div class="tile__body">
+            <h2 class="tile__title">Zatrzymaj robota</h2>
+            <p class="tile__line">Włóż rękę blisko robota.<br>Radar zahamuje koła w ułamku sekundy.</p>
+            <span class="pill" id="pillRadar" data-tone="muted"><i></i><span>–</span></span>
+          </div>
+        </article>
+
+        <!-- 3. decyzja i napęd -->
+        <article class="tile" id="tileDrive">
+          <div class="cap"><b>Napęd 4WD</b><span class="cap__dim">decyzja robota</span></div>
+          <div class="tile__viz">
+            <canvas id="chassis"></canvas>
+            <div class="waiting" id="driveWaiting"><i class="spinner"></i><span>Czekam na napęd</span></div>
+          </div>
+          <div class="tile__body">
+            <h2 class="tile__title">Kto decyduje?</h2>
+            <p class="tile__line">Kamera chce jechać, a radar może zawetować.<br>Bezpieczeństwo zawsze wygrywa.</p>
+            <span class="pill" id="pillDrive" data-tone="muted"><i></i><span>Stoję</span></span>
+          </div>
+        </article>
+      </section>
+
+      <!-- odczyty pod kafelkami, jak na drugim monitorze -->
+      <section class="readouts">
+        <div class="readout" id="roLast">
+          <div class="r-top"><b id="rLast">–</b><span class="r-unit">s</span></div>
+          <div class="r-label">ostatnie hamowanie</div>
+        </div>
+        <i class="readouts__rule" aria-hidden="true"></i>
+        <div class="readout">
+          <div class="r-top"><b id="rRecord">–</b><span class="r-unit">s</span></div>
+          <div class="r-label">najszybsze hamowanie dziś</div>
+        </div>
+        <i class="readouts__rule" aria-hidden="true"></i>
+        <div class="readout">
+          <div class="r-top"><b id="rPeople">–</b></div>
+          <div class="r-label" id="rPeopleLbl">osoby przy robocie</div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="credits">
+      <img id="logoKolo" src="/branding/kolo" alt="Koło Naukowe Machine Learning Politechniki Rzeszowskiej" draggable="false">
+      <i class="credits-rule" aria-hidden="true"></i>
+      <img id="logoRzeszow" src="/branding/rzeszow" alt="Rzeszów – stolica innowacji" draggable="false">
+      <div class="diag" id="diag">
+        <span class="diag-item" id="dotOak"><i class="dot"></i>OAK-D</span>
+        <span class="diag-item" id="dotLidar"><i class="dot"></i>LiDAR</span>
+        <span class="diag-item" id="dotEsp"><i class="dot"></i>ESP32</span>
+      </div>
+    </footer>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,53 @@
+/* Styl 2 – „Trzy kroki”: jasna tablica wystawowa, gość prowadzony krok po kroku. */
+:root {
+  --bg: #eceef1; --card: #ffffff; --ink: #11141a; --ink-2: #4b5260; --muted: #8a909c; --line: #d5d9e0;
+  --accent: #2457f5; --go: #12804a; --stop: #d42a3c;
+}
+html, body { background: var(--bg); color: var(--ink); font-family: "Barlow", system-ui, sans-serif; }
+#stage { background: var(--bg); }
+
+.top { position: absolute; left: 72px; right: 72px; top: 52px; display: flex; justify-content: space-between; align-items: baseline; }
+.top h1 { margin: 0; font-family: "Barlow Condensed"; font-weight: 600; font-size: 64px; letter-spacing: -0.5px; }
+.devices { display: flex; gap: 24px; font-size: 18px; color: var(--ink-2); }
+.devices span { display: inline-flex; align-items: center; gap: 8px; }
+.devices i { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.devices i.real { background: var(--go); }
+.devices i.sim { background: #c98500; }
+
+.steps { position: absolute; left: 72px; right: 72px; top: 176px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+.step {
+  height: 660px; border-radius: 20px; padding: 28px 28px 24px; display: flex; flex-direction: column;
+  border: 1px solid transparent; opacity: 0.5; transition: opacity 260ms, background 260ms, box-shadow 260ms, border-color 260ms;
+}
+.step.on { opacity: 1; background: var(--card); border-color: var(--line); box-shadow: 0 24px 48px rgba(17, 20, 26, 0.08); }
+.head { display: flex; gap: 20px; align-items: flex-start; height: 128px; }
+.num {
+  flex: none; width: 64px; height: 64px; border-radius: 50%; display: grid; place-items: center;
+  font-family: "Barlow Condensed"; font-weight: 600; font-size: 38px; color: var(--ink-2); box-shadow: inset 0 0 0 2px var(--line);
+}
+.step.on .num { background: var(--accent); color: #fff; box-shadow: none; }
+.head h2 { margin: 2px 0 6px; font-family: "Barlow Condensed"; font-weight: 600; font-size: 44px; line-height: 1; }
+.head p { margin: 0; font-size: 20px; line-height: 1.35; color: var(--ink-2); }
+
+.viz { position: relative; flex: 1; border-radius: 14px; overflow: hidden; background: #f4f5f7; }
+.viz > canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.viz.cam-box { background: #15171a; }
+.throttle { position: absolute; left: 0; right: 0; bottom: 18px; text-align: center; font-family: "Barlow Condensed"; font-weight: 600; font-size: 56px; color: var(--ink); }
+.state { margin-top: 18px; height: 40px; font-size: 26px; font-weight: 600; display: flex; align-items: center; gap: 12px; }
+.state::before { content: ""; width: 12px; height: 12px; border-radius: 50%; background: var(--muted); flex: none; }
+.state[data-tone="go"]::before { background: var(--go); }
+.state[data-tone="stop"] { color: var(--stop); }
+.state[data-tone="stop"]::before { background: var(--stop); }
+.state[data-tone="route"]::before { background: var(--accent); }
+
+.bottom { position: absolute; left: 72px; right: 72px; bottom: 0; height: 168px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; }
+.stats { display: flex; gap: 64px; }
+.stats div { display: flex; flex-direction: column; }
+.stats b { font-family: "Barlow Condensed"; font-weight: 600; font-size: 56px; line-height: 1; }
+.stats span { margin-top: 6px; font-size: 18px; color: var(--ink-2); }
+.logos { display: flex; align-items: center; gap: 48px; }
+.logos img { object-fit: contain; filter: brightness(0); opacity: 0.86; }
+#logoKolo { height: 70px; max-width: 300px; }
+#logoRzeszow { height: 52px; max-width: 300px; }
+.logos .rule { width: 1px; height: 52px; background: var(--line); }
+.style-hint { color: #11141a; background: rgba(255, 255, 255, 0.92); box-shadow: 0 0 0 1px #d5d9e0; }

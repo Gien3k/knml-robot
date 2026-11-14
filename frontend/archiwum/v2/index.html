@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Autonomiczny łazik – styl 2: trzy kroki</title>
+  <link rel="icon" href="../../favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../shared/base.css">
+  <link rel="stylesheet" href="v2.css">
+</head>
+<body>
+  <div id="stage">
+    <header class="top">
+      <h1>Steruj robotem w trzech krokach</h1>
+      <span class="devices" id="devices"></span>
+    </header>
+
+    <main class="steps">
+      <section class="step" id="step1">
+        <div class="head"><span class="num">1</span><div><h2>Pokaż otwartą dłoń</h2><p>Kamera rozpozna gest. Pięść to jazda do tyłu.</p></div></div>
+        <div class="viz cam-box"><div class="cam-inner"><img id="cam" alt=""><canvas id="ov"></canvas></div></div>
+        <div class="state" id="st1">–</div>
+      </section>
+      <section class="step" id="step2">
+        <div class="head"><span class="num">2</span><div><h2>Jedź</h2><p>Im bliżej kamery trzymasz dłoń, tym szybciej kręcą się koła.</p></div></div>
+        <div class="viz drive"><canvas id="chassis"></canvas><span class="throttle" id="throttle">0%</span></div>
+        <div class="state" id="st2">–</div>
+      </section>
+      <section class="step" id="step3">
+        <div class="head"><span class="num">3</span><div><h2>Zatrzymaj robota</h2><p>Włóż rękę przy robocie. Radar zahamuje w ułamku sekundy.</p></div></div>
+        <div class="viz"><canvas id="radar"></canvas></div>
+        <div class="state" id="st3">–</div>
+      </section>
+    </main>
+
+    <footer class="bottom">
+      <div class="stats">
+        <div><b id="record">–</b><span>najszybsze hamowanie dziś</span></div>
+        <div><b id="count">–</b><span id="countLbl">zatrzymań dziś</span></div>
+      </div>
+      <div class="logos">
+        <img id="logoKolo" src="/branding/kolo" alt="Koło Naukowe Machine Learning Politechniki Rzeszowskiej" draggable="false">
+        <i class="rule" aria-hidden="true"></i>
+        <img id="logoRzeszow" src="/branding/rzeszow" alt="Rzeszów – stolica innowacji" draggable="false">
+      </div>
+    </footer>
+  </div>
+  <script type="module" src="v2.js"></script>
+</body>
+</html>

@@ -1,13 +1,13 @@
-"""Wspólny, spójny świat symulacji dla sensorów w trybie Mock.
+"""Wspólny świat symulacji – działa TYLKO, gdy wszystkie trzy urządzenia są symulowane.
 
-Układ współrzędnych świata = pozycja startowa robota:
-  X – do przodu (w stronę odwiedzających), Y – w lewo, Z – w górę.
+Układ współrzędnych = układ robota (środek LiDAR-u): X do przodu (w stronę
+odwiedzających), Y w lewo, Z w górę. Robot stoi na podstawce i się nie przemieszcza.
 
-LiDAR i OAK-D patrzą na TEN SAM świat, więc radar, obraz i detekcje są zgodne.
-Kamera jest symulowana fizycznie: postacie z brył 3D (kapsuł) trafiają do bufora
-głębi, z którego powstaje (1) mapa głębi jak ze stereo OAK-D – ta sama, na której
-działa prawdziwy klasyfikator gestów – oraz (2) obraz w podczerwieni z cieniowaniem,
-wzorem projektora kropek i szumem matrycy (OAK-D Pro ma oświetlacz IR).
+LiDAR i kamera patrzą na TEN SAM świat: przechodniów, "kierowcę" wykonującego
+scenariusz gestów i drugą rękę, którą kierowca wkłada w tarczę LiDAR-u.
+Kamera jest renderowana fizycznie (z-bufor brył, cieniowanie w podczerwieni,
+wzór projektora kropek, szum), a dłoń na obrazie powstaje z tych samych 21 punktów,
+które trafiają do interfejsu jako wynik "sieci".
 """
 from __future__ import annotations
 
@@ -20,24 +20,39 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from ..config import settings
+from . import hand as handmodel
 
-# Scenariusz "kierowcy": (czas trwania [s], faza)
-SCRIPT: list[tuple[float, str]] = [
-    (4.0, "approach"),
-    (2.0, "idle"),
-    (5.0, "open_center"),
-    (3.0, "open_left"),
-    (3.0, "open_right"),
-    (3.0, "fist"),
-    (2.0, "idle"),
-    (3.5, "poke"),
-    (4.0, "open_center"),
-    (5.0, "leave"),
-]
-SCRIPT_LEN = sum(d for d, _ in SCRIPT)
-HAND_Z = 1.0          # wysokość dłoni [m] – tuż nad kamerą robota stojącego na stole
-SKIN = 0.92           # skóra jest jasna w bliskiej podczerwieni
+HAND_Z = 0.92         # wysokość środka dłoni [m] – tuż pod kamerą, cała dłoń mieści się w kadrze
+PALM_IDX = (0, 5, 9, 13, 17)
+
+
+@dataclass
+class Phase:
+    dur: float
+    name: str
+    pos: tuple[float, float]       # gdzie stoi kierowca
+    reach: float                   # jak daleko przed sobą trzyma dłoń
+    lateral: float                 # przesunięcie dłoni w jego prawo [m]
+    hand: str | None               # open | fist | None
+    poke: bool = False             # druga ręka w tarczy LiDAR-u
+
+
+SCRIPT = (
+    Phase(5.0, "approach", (1.30, 0.00), 0.15, 0.0, None),
+    Phase(1.5, "idle", (1.30, 0.00), 0.15, 0.0, None),
+    Phase(3.5, "drive_far", (1.30, 0.00), 0.30, 0.0, "open"),
+    Phase(3.5, "drive_near", (1.05, 0.00), 0.48, 0.0, "open"),
+    Phase(3.0, "steer_a", (1.10, 0.00), 0.42, 0.20, "open"),
+    Phase(3.0, "steer_b", (1.10, 0.00), 0.42, -0.20, "open"),
+    Phase(3.0, "fist", (1.15, 0.00), 0.40, 0.0, "fist"),
+    Phase(2.0, "drive_mid", (1.15, 0.00), 0.38, 0.0, "open"),
+    Phase(4.0, "poke", (1.15, 0.00), 0.38, 0.0, "open", poke=True),
+    Phase(2.0, "drive_mid2", (1.15, 0.00), 0.38, 0.0, "open"),
+    Phase(4.0, "leave", (3.40, -2.20), 0.15, 0.0, None),
+    Phase(14.0, "away", (4.60, -3.60), 0.15, 0.0, None),
+)
+SCRIPT_LEN = sum(p.dur for p in SCRIPT)
+POKE_TARGET = np.array([0.03, -0.23])     # prawy bok robota, ~23 cm od LiDAR-u
 
 
 @dataclass
@@ -51,27 +66,26 @@ class Person:
     tx: float = 0.0
     ty: float = 0.0
     wait_until: float = 0.0
-    role: str = "walker"
     radius: float = 0.18
     heading: float = math.pi
 
 
-def _unit(v: np.ndarray) -> np.ndarray:
+def _u(v: np.ndarray) -> np.ndarray:
     n = float(np.linalg.norm(v))
     return v / n if n > 1e-9 else v
 
 
 class SimWorld:
-    def __init__(self, seed: int = 7) -> None:
+    def __init__(self, cam_x: float = 0.10, cam_y: float = 0.0, cam_h: float = 0.95,
+                 hfov_deg: float = 69.0, seed: int = 7) -> None:
         self.lock = threading.Lock()
         self.rng = random.Random(seed)
-        self.t0 = time.monotonic()
-        self._last = self.t0
-        self.robot = np.zeros(3)                 # x, y, theta (świat)
-        self._wheels = (0.0, 0.0)
-        self.motion_enabled = False              # True w trybie "mat"
+        self.t0: float | None = None
+        self._last: float | None = None
+        self.cam = np.array([cam_x, cam_y, cam_h])
+        self.hfov = hfov_deg
 
-        segs = [
+        self.segments = np.array([
             (-1.0, -2.2, -1.0, 2.2),             # tylna ściana stoiska
             (-1.0, 2.2, 0.7, 2.2),               # ścianka lewa
             (-1.0, -2.2, 0.7, -2.2),             # ścianka prawa
@@ -79,62 +93,46 @@ class SimWorld:
             (-0.12, 0.42, -0.12, 1.08),          # monitor na stole
             (-0.20, 0.42, -0.20, 1.08),
             (-0.70, -1.75, -0.70, -1.05),        # roll-up
-        ]
-        self.segments = np.array(segs, dtype=np.float64)
+        ], dtype=np.float64)
         self.pillars = np.array([[3.3, -2.9, 0.25]], dtype=np.float64)
 
-        self.people: list[Person] = []
-        for i in range(4):
-            p = Person(pid=i + 1, x=self.rng.uniform(1.5, 4.0), y=self.rng.uniform(-2.5, 2.5),
+        self.walkers: list[Person] = []
+        for i in range(3):
+            p = Person(pid=i + 1, x=self.rng.uniform(1.8, 4.0), y=self.rng.uniform(-2.5, 2.5),
                        height=self.rng.uniform(1.6, 1.88), albedo=self.rng.uniform(0.32, 0.7),
                        speed=self.rng.uniform(0.45, 1.0))
             self._new_target(p, 0.0)
-            self.people.append(p)
-        self.driver = Person(pid=9, x=2.6, y=1.8, height=1.76, albedo=0.5, speed=0.9, role="driver")
-        self.people.append(self.driver)
+            self.walkers.append(p)
+        self.driver = Person(pid=9, x=4.6, y=-3.6, height=1.76, albedo=0.5, speed=1.15)
 
-        self.phase = "approach"
-        self.phase_t = 0.0
-        self.hand_lateral = 0.0
-        self.hand_reach = 0.0
-        self.hand_visible = False
-        self.hand_open = False
-        self.hand_world = np.array([0.0, 0.0, HAND_Z])
+        self.phase = SCRIPT[0]
+        self.reach = 0.15
+        self.lateral = 0.0
+        self.hand_vis = 0.0         # 0..1 – płynne wyciąganie ręki
+        self.poke = 0.0             # 0..1
+        self.hand_open = True
+        self.hand_world = np.zeros(3)
+        self.poke_world = np.zeros(3)
         self._cache: dict = {}
 
     # ------------------------------------------------------------------ czas
     def _new_target(self, p: Person, now: float) -> None:
-        p.tx = self.rng.uniform(0.95, 4.3)
+        p.tx = self.rng.uniform(1.6, 4.3)
         p.ty = self.rng.uniform(-3.0, 3.0)
         p.wait_until = now + self.rng.uniform(0.0, 3.5)
 
-    def set_wheels(self, left: float, right: float) -> None:
-        self._wheels = (left, right)
-
-    def tick(self) -> None:
+    def tick(self, now: float) -> None:
         with self.lock:
-            now = time.monotonic()
+            if self.t0 is None:
+                self.t0 = self._last = now
             dt = min(0.1, now - self._last)
             if dt <= 0:
                 return
             self._last = now
             t = now - self.t0
-            self._step_robot(dt)
-            for p in self.people:
-                if p.role == "walker":
-                    self._step_walker(p, dt, t)
+            for p in self.walkers:
+                self._step_walker(p, dt, t)
             self._step_driver(dt, t)
-
-    def _step_robot(self, dt: float) -> None:
-        if not self.motion_enabled:
-            return
-        left, right = self._wheels
-        v = (left + right) / 2.0
-        w = (right - left) / settings.track_width_m
-        th = self.robot[2]
-        self.robot[0] += v * math.cos(th) * dt
-        self.robot[1] += v * math.sin(th) * dt
-        self.robot[2] = (th + w * dt + math.pi) % (2 * math.pi) - math.pi
 
     def _step_walker(self, p: Person, dt: float, t: float) -> None:
         if t < p.wait_until:
@@ -149,112 +147,115 @@ class SimWorld:
         p.y += dy / d * step
         target_h = math.atan2(dy, dx)
         p.heading += ((target_h - p.heading + math.pi) % (2 * math.pi) - math.pi) * min(1.0, dt * 4)
-        p.x = max(p.x, 0.9)
+        p.x = max(p.x, 1.5)
         ddx, ddy = p.x - self.driver.x, p.y - self.driver.y
         dd = math.hypot(ddx, ddy)
-        if 0 < dd < 0.55:
-            p.x += ddx / dd * (0.55 - dd)
-            p.y += ddy / dd * (0.55 - dd)
+        if 0 < dd < 0.6:
+            p.x += ddx / dd * (0.6 - dd)
+            p.y += ddy / dd * (0.6 - dd)
 
     def _step_driver(self, dt: float, t: float) -> None:
         tc = t % SCRIPT_LEN
         acc = 0.0
-        phase, pt, dur = "idle", 0.0, 1.0
-        for d, ph in SCRIPT:
-            if tc < acc + d:
-                phase, pt, dur = ph, tc - acc, d
+        ph = SCRIPT[-1]
+        for p in SCRIPT:
+            if tc < acc + p.dur:
+                ph = p
                 break
-            acc += d
-        self.phase, self.phase_t = phase, pt
+            acc += p.dur
+        self.phase = ph
         drv = self.driver
-        if phase == "approach":
-            a = min(1.0, pt / dur)
-            a = a * a * (3 - 2 * a)
-            drv.x, drv.y = 2.6 + (1.05 - 2.6) * a, 1.8 + (0.02 - 1.8) * a
-        elif phase == "leave":
-            a = min(1.0, pt / dur)
-            drv.x, drv.y = 1.05 + (3.6 - 1.05) * a, 0.02 + (-2.2 - 0.02) * a
+        dx, dy = ph.pos[0] - drv.x, ph.pos[1] - drv.y
+        d = math.hypot(dx, dy)
+        if d > 1e-3:
+            step = min(d, drv.speed * dt)
+            drv.x += dx / d * step
+            drv.y += dy / d * step
+        if d > 0.3:
+            drv.heading = math.atan2(dy, dx)
         else:
-            drv.x, drv.y = 1.05, 0.02
-        drv.heading = math.atan2(self.robot[1] - drv.y, self.robot[0] - drv.x)
+            drv.heading = math.atan2(-drv.y, -drv.x)          # twarzą do robota
 
-        lateral_target = {"open_left": 0.24, "open_right": -0.24}.get(phase, 0.0)
-        self.hand_lateral += (lateral_target - self.hand_lateral) * min(1.0, dt * 5.0)
-        self.hand_visible = phase not in ("approach", "leave", "idle")
-        self.hand_open = phase.startswith("open") or phase == "poke"
+        k = min(1.0, dt * 4.0)
+        self.reach += (ph.reach - self.reach) * k
+        self.lateral += (ph.lateral - self.lateral) * k
+        self.hand_vis += ((1.0 if ph.hand else 0.0) - self.hand_vis) * min(1.0, dt * 5.0)
+        self.poke += ((1.0 if ph.poke else 0.0) - self.poke) * min(1.0, dt * 3.5)
+        if ph.hand:
+            self.hand_open = ph.hand == "open"
 
-        rx, ry = self.robot[0], self.robot[1]
-        ux, uy = rx - drv.x, ry - drv.y
-        dist = math.hypot(ux, uy) or 1.0
-        ux, uy = ux / dist, uy / dist
-        if phase == "poke":
-            target_reach = dist - (settings.robot_half_length_m + 0.07)
-        else:
-            target_reach = 0.42 if self.hand_visible else 0.15
-        self.hand_reach += (target_reach - self.hand_reach) * min(1.0, dt * 3.0)
-        px, py = -uy, ux
-        self.hand_world = np.array([drv.x + ux * self.hand_reach + px * self.hand_lateral,
-                                    drv.y + uy * self.hand_reach + py * self.hand_lateral, HAND_Z])
+        F = _u(np.array([-drv.x, -drv.y]))                     # od kierowcy do robota
+        R = np.array([F[1], -F[0]])                            # jego prawa strona
+        reach = 0.12 + (self.reach - 0.12) * self.hand_vis
+        z = HAND_Z - 0.35 * (1.0 - self.hand_vis) + 0.012 * math.sin(t * 2.1)
+        xy = np.array([drv.x, drv.y]) + F * reach + R * self.lateral * self.hand_vis
+        self.hand_world = np.array([xy[0], xy[1], z])
+        shoulder_l = np.array([drv.x, drv.y]) - R * 0.19 + F * 0.05
+        pk = shoulder_l + (POKE_TARGET - shoulder_l) * self.poke
+        self.poke_world = np.array([pk[0], pk[1], HAND_Z - 0.05])
 
     def snapshot(self) -> dict:
         with self.lock:
+            drv = self.driver
             return {
-                "robot": self.robot.copy(),
-                "people": [(p.pid, p.x, p.y, p.height, p.albedo, p.radius, p.role, p.heading) for p in self.people],
-                "hand": self.hand_world.copy(),
-                "hand_visible": self.hand_visible,
-                "hand_open": self.hand_open,
-                "phase": self.phase,
+                "walkers": [(p.x, p.y, p.height, p.albedo, p.radius, p.heading) for p in self.walkers],
+                "driver": (drv.x, drv.y, drv.height, drv.albedo, drv.radius, drv.heading),
+                "hand": self.hand_world.copy(), "hand_vis": self.hand_vis, "hand_open": self.hand_open,
+                "poke": self.poke, "poke_world": self.poke_world.copy(), "phase": self.phase.name,
             }
 
     # ---------------------------------------------------------------- LiDAR
     def lidar_scan(self, n: int = 360) -> np.ndarray:
         """Zasięgi [m] dla n kątów w układzie robota (CCW od przodu). 0 = brak echa."""
         s = self.snapshot()
-        rx, ry, rth = s["robot"]
-        ang = np.deg2rad(np.arange(n) * (360.0 / n)) + rth
+        ang = np.deg2rad(np.arange(n) * (360.0 / n))
         d = np.stack([np.cos(ang), np.sin(ang)], 1)
-        o = np.array([rx, ry])
-        best = np.full(n, np.inf)
-        circles = [(p[1], p[2], p[5]) for p in s["people"]]
+        circles = [(w[0], w[1], w[4]) for w in s["walkers"]]
+        dv = s["driver"]
+        circles.append((dv[0], dv[1], dv[4]))
         circles += [tuple(c) for c in self.pillars]
-        if s["hand_visible"]:
+        if s["hand_vis"] > 0.5:
             circles.append((s["hand"][0], s["hand"][1], 0.045))
+        if s["poke"] > 0.05:
+            pk = s["poke_world"][:2]
+            base = np.array([dv[0], dv[1]])
+            for a in (0.0, 0.18, 0.36, 0.54):                  # dłoń + przedramię
+                c = pk + (base - pk) * a
+                circles.append((c[0], c[1], 0.045 if a == 0.0 else 0.04))
         c = np.array(circles)
-        oc = o[None, :] - c[:, :2]
+        oc = -c[:, :2]
         b = d @ oc.T
         cc = (oc ** 2).sum(1) - c[:, 2] ** 2
         disc = b ** 2 - cc[None, :]
         with np.errstate(invalid="ignore"):
             t = -b - np.sqrt(disc)
         t[(disc < 0) | (t <= 0)] = np.inf
-        best = np.minimum(best, t.min(1))
+        best = t.min(1)
         seg = self.segments
         p, q = seg[:, :2], seg[:, 2:]
         e = q - p
-        w = p - o[None, :]
         denom = d[:, 0:1] * e[None, :, 1] - d[:, 1:2] * e[None, :, 0]
         with np.errstate(divide="ignore", invalid="ignore"):
-            tt = (w[None, :, 0] * e[None, :, 1] - w[None, :, 1] * e[None, :, 0]) / denom
-            ss = (w[None, :, 0] * d[:, 1:2] - w[None, :, 1] * d[:, 0:1]) / denom
+            tt = (p[None, :, 0] * e[None, :, 1] - p[None, :, 1] * e[None, :, 0]) / denom
+            ss = (p[None, :, 0] * d[:, 1:2] - p[None, :, 1] * d[:, 0:1]) / denom
         ok = (np.abs(denom) > 1e-9) & (tt > 0) & (ss >= 0) & (ss <= 1)
         best = np.minimum(best, np.where(ok, tt, np.inf).min(1))
-        r = best + np.random.normal(0, 0.008, n)
-        r[~np.isfinite(best) | (best > settings.lidar_max_range_m)] = 0.0
+        r = best + np.random.normal(0, 0.006, n)
+        r[~np.isfinite(best) | (best > 12.0)] = 0.0
         r[np.random.random(n) < 0.02] = 0.0
         return r
 
     # ---------------------------------------------------------------- kamera
-    @staticmethod
-    def _to_cam(pts: np.ndarray, robot: np.ndarray, h: float) -> np.ndarray:
+    def _to_cam(self, pts: np.ndarray) -> np.ndarray:
         """Punkty świata (N,3) -> kamera (N,3): x w prawo, y w dół, z do przodu."""
-        cp, sp = math.cos(robot[2]), math.sin(robot[2])
-        dx, dy, dz = pts[:, 0] - robot[0], pts[:, 1] - robot[1], pts[:, 2] - h
-        return np.stack([-(-sp * dx + cp * dy), -dz, cp * dx + sp * dy], 1)
+        cx, cy, ch = self.cam
+        return np.stack([-(pts[:, 1] - cy), -(pts[:, 2] - ch), pts[:, 0] - cx], 1)
 
-    def _body(self, p, s: dict, cam_pos: np.ndarray) -> list[tuple]:
+    @staticmethod
+    def _body(person: tuple, right_wrist: np.ndarray | None = None,
+              left_wrist: np.ndarray | None = None) -> list[tuple]:
         """Postać z kapsuł: (p0, p1, promień, albedo)."""
-        _, x, y, H, alb, _, role, heading = p
+        x, y, H, alb, _, heading = person
         k = H / 1.75
         fx_, fy_ = math.cos(heading), math.sin(heading)
         lx, ly = -fy_, fx_
@@ -270,47 +271,23 @@ class SimWorld:
             caps += [(hip, knee, 0.075, pants), (knee, ankle, 0.055, pants), (ankle, toe, 0.042, shoe)]
         caps += [(P(0, 0.07, 0.97 * k), P(0, 0.09, 1.37 * k), 0.115, alb),
                  (P(0, -0.07, 0.97 * k), P(0, -0.09, 1.37 * k), 0.115, alb),
-                 (P(0, 0, 1.40 * k), P(0, 0, 1.50 * k), 0.05, SKIN * 0.9),
-                 (P(0.01, 0, 1.57 * k), P(0.0, 0, 1.65 * k), 0.093, SKIN),
-                 (P(-0.025, 0, 1.64 * k), P(-0.03, 0, 1.69 * k), 0.088, 0.22)]   # włosy
-        sl, sr = P(0, 0.19, 1.39 * k), P(0, -0.19, 1.39 * k)
-        el, wl = P(0.0, 0.22, 1.11 * k), P(0.04, 0.23, 0.86 * k)
-        caps += [(sl, el, 0.046, alb), (el, wl, 0.038, alb), (wl, P(0.05, 0.235, 0.79 * k), 0.036, SKIN)]
-        if role == "driver" and s["hand_visible"]:
-            hw = s["hand"]
-            e = sr + (hw - sr) * 0.5 + np.array([0.0, 0.0, -0.10])
-            wr = hw + _unit(e - hw) * 0.065
-            caps += [(sr, e, 0.046, alb), (e, wr, 0.037, alb)]
-            caps += self._hand(hw, cam_pos, s["hand_open"])
-        else:
-            er, wr = P(0.0, -0.22, 1.11 * k), P(0.04, -0.23, 0.86 * k)
-            caps += [(sr, er, 0.046, alb), (er, wr, 0.038, alb), (wr, P(0.05, -0.235, 0.79 * k), 0.036, SKIN)]
-        return caps
-
-    @staticmethod
-    def _hand(hw: np.ndarray, cam_pos: np.ndarray, open_: bool) -> list[tuple]:
-        v = cam_pos - hw
-        v[2] = 0.0
-        v = _unit(v)
-        lat = np.array([-v[1], v[0], 0.0])
-        up = np.array([0.0, 0.0, 1.0])
-        if not open_:
-            return [(hw + up * 0.008, hw - up * 0.012, 0.047, SKIN)]
-        caps = [(hw - up * 0.028 + lat * 0.013, hw + up * 0.022 + lat * 0.013, 0.03, SKIN),
-                (hw - up * 0.028 - lat * 0.013, hw + up * 0.022 - lat * 0.013, 0.03, SKIN)]
-        for i, (ang, length) in enumerate(((-27, 0.068), (-9, 0.08), (9, 0.077), (27, 0.062))):
-            a = math.radians(ang)
-            d = up * math.cos(a) + lat * math.sin(a)
-            base = hw + up * 0.035 + lat * (-0.027 + i * 0.018)
-            caps.append((base, base + d * length, 0.0088, SKIN))
-        a = math.radians(-64)
-        d = up * math.cos(a) + lat * math.sin(a)
-        base = hw - lat * 0.03 - up * 0.008
-        caps.append((base, base + d * 0.056, 0.0105, SKIN))
+                 (P(0, 0, 1.40 * k), P(0, 0, 1.50 * k), 0.05, handmodel.SKIN * 0.9),
+                 (P(0.01, 0, 1.57 * k), P(0.0, 0, 1.65 * k), 0.093, handmodel.SKIN),
+                 (P(-0.025, 0, 1.64 * k), P(-0.03, 0, 1.69 * k), 0.088, 0.22)]       # włosy
+        for sd, wrist in ((1, left_wrist), (-1, right_wrist)):
+            sh = P(0, 0.19 * sd, 1.39 * k)
+            if wrist is None:
+                el, wr = P(0.0, 0.22 * sd, 1.11 * k), P(0.04, 0.23 * sd, 0.86 * k)
+                caps += [(sh, el, 0.046, alb), (el, wr, 0.038, alb),
+                         (wr, P(0.05, 0.235 * sd, 0.79 * k), 0.036, handmodel.SKIN)]
+            else:
+                el = sh + (wrist - sh) * 0.5 + np.array([0.0, 0.0, -0.10])
+                wr = wrist + _u(el - wrist) * 0.02
+                caps += [(sh, el, 0.046, alb), (el, wr, 0.037, alb)]
         return caps
 
     def _grids(self, W: int, H: int, f: float) -> tuple:
-        key = ("g", W, H, round(f, 3))
+        key = (W, H, round(f, 3))
         g = self._cache.get(key)
         if g is None:
             xc = ((np.arange(W, dtype=np.float32) - W / 2) / f)[None, :]
@@ -325,81 +302,86 @@ class SimWorld:
             self._cache[key] = g
         return g
 
-    def render_ir(self, cam: dict) -> tuple[np.ndarray, np.ndarray, list[dict]]:
-        """Zwraca (obraz IR uint8 HxW, głębia Z [mm] uint16 HxW, widoczne osoby)."""
+    def render(self, W: int = 640, H: int = 360) -> tuple[np.ndarray, dict | None, list[dict]]:
+        """Zwraca (obraz IR uint8 HxW, dłoń jak z prawdziwej kamery albo None, osoby jak z detektora)."""
         s = self.snapshot()
-        W, H = cam["w"], cam["h"]
-        f = (W / 2) / math.tan(math.radians(cam["hfov"]) / 2)
-        hm = cam["h_m"]
-        rob = s["robot"]
+        f = (W / 2) / math.tan(math.radians(self.hfov) / 2)
+        cxw, cyw, hm = self.cam
         xc, yc, dots, vig = self._grids(W, H, f)
-        cp, sp = math.cos(rob[2]), math.sin(rob[2])
 
         # --- tło: podłoga hali z fugami płyt + ściana stoiska naprzeciwko ---
         with np.errstate(divide="ignore", invalid="ignore"):
             zf = np.where(yc > 1e-4, hm / yc, np.inf)
         zbuf = np.broadcast_to(zf, (H, W)).astype(np.float32).copy()
         with np.errstate(invalid="ignore"):
-            Xw = rob[0] + zbuf * (cp + xc * sp)
-            Yw = rob[1] + zbuf * (sp - xc * cp)
+            Xw = cxw + zbuf
+            Yw = cyw - xc * zbuf
             seam = (np.abs((Xw % 1.0) - 0.5) > 0.485) | (np.abs((Yw % 1.0) - 0.5) > 0.485)
         alb = np.where(np.isfinite(zbuf), np.where(seam, 0.13, 0.21), 0.0).astype(np.float32)
-        den = cp + xc * sp
-        with np.errstate(divide="ignore", invalid="ignore"):
-            tw = np.where(den > 0.05, (5.0 - rob[0]) / den, np.inf)
-            hgt = hm - yc * tw
-            yw = rob[1] + tw * (sp - xc * cp)
-            panel = (np.abs((yw % 1.2) - 0.6) > 0.585) | (np.abs(hgt - 2.2) < 0.02)
-        wall = (hgt > 0) & (hgt < 2.6) & (tw < zbuf)
+        tw = 5.0 - cxw
+        hgt = hm - yc * tw
+        yw = cyw - xc * tw
+        panel = (np.abs((yw % 1.2) - 0.6) > 0.585) | (np.abs(hgt - 2.2) < 0.02)
+        wall = np.broadcast_to((hgt > 0) & (hgt < 2.6), (H, W)) & (tw < zbuf)
         zbuf = np.where(wall, tw, zbuf).astype(np.float32)
         alb = np.where(wall, np.where(panel, 0.3, 0.42), alb).astype(np.float32)
+
+        # --- bryły: przechodnie, kierowca, jego dłonie (ostatni element = numer osoby) ---
+        DRIVER = 9
+        caps: list[tuple] = []
+        for i, w in enumerate(s["walkers"]):
+            caps += [(*c, i + 1) for c in self._body(w)]
+        lm3 = None
+        if s["hand_vis"] > 0.02:
+            toward = self.cam - s["hand"]
+            lm3 = handmodel.landmarks(s["hand"], toward, s["hand_open"], tilt=0.15)
+            caps += [(*c, DRIVER) for c in handmodel.capsules(lm3)]
+        poke_wrist = s["poke_world"] if s["poke"] > 0.05 else None
+        if poke_wrist is not None:
+            caps.append((poke_wrist, poke_wrist + np.array([0.0, 0.0, 0.01]), 0.045, handmodel.SKIN, DRIVER))
+        caps += [(*c, DRIVER) for c in
+                 self._body(s["driver"], right_wrist=None if lm3 is None else lm3[0], left_wrist=poke_wrist)]
         idbuf = np.zeros((H, W), np.int16)
 
-        # --- postacie z kapsuł (z-bufor) ---
-        cam_pos = np.array([rob[0], rob[1], hm])
-        cx, cy = W / 2, H / 2
-        for p in s["people"]:
-            for p0, p1, r, a in self._body(p, s, cam_pos):
-                c = self._to_cam(np.array([p0, p1]), rob, hm)
-                z0, z1 = c[0, 2], c[1, 2]
-                near = 0.12
-                if z0 < near and z1 < near:
-                    continue
-                if z0 < near:
-                    c[0] = c[0] + (c[1] - c[0]) * ((near - z0) / (z1 - z0))
-                if z1 < near:
-                    c[1] = c[1] + (c[0] - c[1]) * ((near - z1) / (z0 - z1))
-                u = cx + f * c[:, 0] / c[:, 2]
-                v = cy + f * c[:, 1] / c[:, 2]
-                R = f * r / c[:, 2]
-                x0 = max(0, int(math.floor(min(u - R))))
-                x1 = min(W, int(math.ceil(max(u + R))) + 1)
-                y0 = max(0, int(math.floor(min(v - R))))
-                y1 = min(H, int(math.ceil(max(v + R))) + 1)
-                if x0 >= x1 or y0 >= y1:
-                    continue
-                X = np.arange(x0, x1, dtype=np.float32)[None, :]
-                Y = np.arange(y0, y1, dtype=np.float32)[:, None]
-                du, dv = u[1] - u[0], v[1] - v[0]
-                L2 = du * du + dv * dv
-                if L2 > 1e-6:
-                    t = np.clip(((X - u[0]) * du + (Y - v[0]) * dv) / L2, 0, 1)
-                else:
-                    t = np.zeros((1, 1), np.float32)
-                d2 = (X - (u[0] + t * du)) ** 2 + (Y - (v[0] + t * dv)) ** 2
-                Rt = R[0] + (R[1] - R[0]) * t
-                m = d2 < Rt * Rt
-                if not np.any(m):
-                    continue
-                zc = c[0, 2] + (c[1, 2] - c[0, 2]) * t
-                surf = np.broadcast_to(zc - r * np.sqrt(np.clip(1.0 - d2 / (Rt * Rt), 0, 1)), m.shape)
-                sub = zbuf[y0:y1, x0:x1]
-                upd = m & (surf < sub)
-                sub[upd] = surf[upd]
-                alb[y0:y1, x0:x1][upd] = a
-                idbuf[y0:y1, x0:x1][upd] = p[0]
+        cxp, cyp = W / 2, H / 2
+        near = 0.12
+        for p0, p1, r, a, pid in caps:
+            c = self._to_cam(np.array([p0, p1]))
+            z0, z1 = c[0, 2], c[1, 2]
+            if z0 < near and z1 < near:
+                continue
+            if z0 < near:
+                c[0] = c[0] + (c[1] - c[0]) * ((near - z0) / (z1 - z0))
+            if z1 < near:
+                c[1] = c[1] + (c[0] - c[1]) * ((near - z1) / (z0 - z1))
+            u = cxp + f * c[:, 0] / c[:, 2]
+            v = cyp + f * c[:, 1] / c[:, 2]
+            R = f * r / c[:, 2]
+            x0 = max(0, int(math.floor(min(u - R))))
+            x1 = min(W, int(math.ceil(max(u + R))) + 1)
+            y0 = max(0, int(math.floor(min(v - R))))
+            y1 = min(H, int(math.ceil(max(v + R))) + 1)
+            if x0 >= x1 or y0 >= y1:
+                continue
+            X = np.arange(x0, x1, dtype=np.float32)[None, :]
+            Y = np.arange(y0, y1, dtype=np.float32)[:, None]
+            du, dv = u[1] - u[0], v[1] - v[0]
+            L2 = du * du + dv * dv
+            t = np.clip(((X - u[0]) * du + (Y - v[0]) * dv) / L2, 0, 1) if L2 > 1e-6 else np.zeros((1, 1), np.float32)
+            d2 = (X - (u[0] + t * du)) ** 2 + (Y - (v[0] + t * dv)) ** 2
+            Rt = R[0] + (R[1] - R[0]) * t
+            m = d2 < Rt * Rt
+            if not np.any(m):
+                continue
+            zc = c[0, 2] + (c[1, 2] - c[0, 2]) * t
+            surf = np.broadcast_to(zc - r * np.sqrt(np.clip(1.0 - d2 / (Rt * Rt), 0, 1)), m.shape)
+            sub = zbuf[y0:y1, x0:x1]
+            upd = m & (surf < sub)
+            sub[upd] = surf[upd]
+            alb[y0:y1, x0:x1][upd] = a
+            idbuf[y0:y1, x0:x1][upd] = pid
 
-        # --- cieniowanie (oświetlenie hali + oświetlacz IR przy kamerze) ---
+        # --- cieniowanie: oświetlenie hali + oświetlacz IR przy kamerze ---
         valid = np.isfinite(zbuf)
         z = np.where(valid, zbuf, 30.0).astype(np.float32)
         gy, gx = np.gradient(z)
@@ -412,34 +394,38 @@ class SimWorld:
         img = img + np.random.normal(0, 0.016, img.shape).astype(np.float32)
         gray = np.clip(img * 235 + 6, 0, 255).astype(np.uint8)
 
-        # --- głębia jak ze stereo (szum rośnie z kwadratem odległości) ---
-        dz = np.random.standard_normal((H, W)).astype(np.float32) * (1.5 + 2.5 * z * z)
-        depth = np.where(valid & (z < 8.0), z * 1000.0 + dz, 0.0)
-        depth = np.clip(depth, 0, 65535).astype(np.uint16)
-
-        # --- widoczne osoby (jak detekcje sieci) ---
+        # --- osoby "wykryte przez sieć": ramka + odległość (mediana głębi sylwetki) ---
         people = []
-        for p in s["people"]:
-            ys_, xs_ = np.nonzero(idbuf == p[0])
+        for pid in np.unique(idbuf):
+            if pid == 0:
+                continue
+            ys_, xs_ = np.nonzero(idbuf == pid)
             if len(xs_) < 350:
                 continue
-            zz = float(np.median(z[ys_, xs_]))
-            uc, vc = float(xs_.mean()), float(ys_.mean())
             people.append({
-                "pid": p[0], "role": p[6],
-                "bbox": [xs_.min() / W, ys_.min() / H, (xs_.max() + 1) / W, (ys_.max() + 1) / H],
-                "xyz": [(uc - cx) / f * zz, -(vc - cy) / f * zz, zz],
+                "bbox": [round(xs_.min() / W, 4), round(ys_.min() / H, 4),
+                         round((xs_.max() + 1) / W, 4), round((ys_.max() + 1) / H, 4)],
+                "conf": round(0.86 + 0.08 * math.sin(time.monotonic() * 0.7 + int(pid) * 1.7), 2),
+                "dist_m": round(float(np.median(z[ys_, xs_])), 2),
             })
-        return gray, depth, people
+        return gray, self._hand_obs(lm3, s, f, W, H), people
 
-
-_world: SimWorld | None = None
-_world_lock = threading.Lock()
-
-
-def get_world() -> SimWorld:
-    global _world
-    with _world_lock:
-        if _world is None:
-            _world = SimWorld()
-        return _world
+    def _hand_obs(self, lm3: np.ndarray | None, s: dict, f: float, W: int, H: int) -> dict | None:
+        if lm3 is None or s["hand_vis"] < 0.85:
+            return None
+        c = self._to_cam(lm3)
+        if np.any(c[:, 2] < 0.12):
+            return None
+        u = (W / 2 + f * c[:, 0] / c[:, 2]) / W
+        v = (H / 2 + f * c[:, 1] / c[:, 2]) / H
+        inside = (u > 0.01) & (u < 0.99) & (v > 0.01) & (v < 0.99)
+        if inside.mean() < 0.9:
+            return None
+        noise = np.random.normal(0, 0.0015, (21, 2))
+        lm2 = np.stack([u, v], 1) + noise
+        palm = lm2[list(PALM_IDX)]
+        return {"present": True, "gesture": "FIVE" if s["hand_open"] else "FIST",
+                "dist_m": round(float(c[0, 2]) + float(np.random.normal(0, 0.004)), 3), "dist_src": "stereo",
+                "x_norm": round(float(palm[:, 0].mean()), 4), "y_norm": round(float(palm[:, 1].mean()), 4),
+                "landmarks": [[round(float(a), 4), round(float(b), 4)] for a, b in lm2],
+                "bbox": None, "score": 0.97}

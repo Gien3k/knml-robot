@@ -1,5 +1,11 @@
-fastapi>=0.115,<1
-uvicorn[standard]>=0.30,<1
-numpy>=1.26,<3
-opencv-python-headless>=4.9,<5
-pyserial>=3.5,<4
+# Wersje przypięte: identyczny obraz na laptopie (amd64) i Raspberry Pi 5 (arm64).
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+numpy==1.26.4
+opencv-python-headless==4.10.0.84
+pyserial==3.5
+# DepthAI 2.x (NIE 3.x – inne API; hand tracker jest napisany pod 2.x)
+depthai==2.30.0.0
+# testy (python -m pytest w kontenerze)
+pytest==8.3.4
+httpx==0.28.1

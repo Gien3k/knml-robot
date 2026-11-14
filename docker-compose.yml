@@ -1,38 +1,30 @@
 # =============================================================================
-#  KN ML · ADAS 4WD Demo
-#  Start:  docker compose up --build        Dashboard:  http://localhost:8000
+#  KN ML · Autonomiczny Łazik 4WD
+#
+#  Laptop (symulacja, Docker Desktop / Windows / Linux):
+#      docker compose up --build             ->  http://localhost:8090
+#
+#  Raspberry Pi 5 (prawdziwy sprzęt) – ten plik + nakładka:
+#      docker compose -f docker-compose.yml -f docker-compose.rpi.yml up -d --build
+#      (albo COMPOSE_FILE=docker-compose.yml:docker-compose.rpi.yml w .env – robi to setup_rpi.sh)
 # =============================================================================
 name: knml-robot
 
 services:
   robot:
     build: .
-    image: knml/robot-adas:latest
+    image: knml/robot-demo:latest
     container_name: knml-robot
-    restart: unless-stopped
     init: true
     stop_grace_period: 5s
-
-    # Dostęp do sprzętu bez listy "devices:".
-    # Lista devices: wywala start kontenera, gdy urządzenia nie ma. Zamiast tego:
-    #  - privileged: dostęp do wszystkich urządzeń (USB, tty, video),
-    #  - /dev montowany w całości: urządzenia podpięte PO starcie kontenera
-    #    (hot-plug: OAK-D, LiDAR /dev/ttyUSB*, ESP32 /dev/ttyACM* / ttyAMA0)
-    #    od razu pojawiają się w środku. OAK-D zmienia
-    #    VID/PID przy bootowaniu (/dev/bus/usb), co też obsługuje ten mount.
-    privileged: true
-    volumes:
-      - /dev:/dev
-      - ./assets:/app/assets:ro          # logotypy – podmiana bez przebudowy
-
     ports:
-      - "${PORT:-8000}:8000"
-
-    # Opcjonalna konfiguracja (skopiuj .env.example -> .env). Brak pliku = domyślne.
+      - "${PORT:-8090}:8000"
+    volumes:
+      - ./assets:/app/assets:ro          # logotypy – podmiana bez przebudowy
+      - ./data:/app/data                 # kalibracja radaru – przetrwa przebudowę i restart
     env_file:
       - path: .env
         required: false
-
     logging:
       driver: json-file
       options:

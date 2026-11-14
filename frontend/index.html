@@ -1,106 +1,101 @@
 <!doctype html>
 <html lang="pl">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ADAS 4WD – Koło Naukowe ML</title>
-    <link rel="icon" href="/favicon.svg" />
-  </head>
-  <body>
-    <div id="stage">
-      <header class="top">
-        <div class="mark">
-          <svg viewBox="0 0 40 40" aria-hidden="true">
-            <rect x="11" y="8" width="18" height="24" rx="4" fill="none" stroke="currentColor" stroke-width="2" />
-            <rect x="6" y="10" width="4" height="8" rx="1.5" fill="currentColor" />
-            <rect x="6" y="22" width="4" height="8" rx="1.5" fill="currentColor" />
-            <rect x="30" y="10" width="4" height="8" rx="1.5" fill="currentColor" />
-            <rect x="30" y="22" width="4" height="8" rx="1.5" fill="currentColor" />
-            <path d="M20 32 v6" stroke="var(--route)" stroke-width="2.4" stroke-linecap="round" />
-          </svg>
-          <span class="wordmark">ADAS 4WD</span>
-          <span class="tagline">robot, który widzi, rozumie gesty i sam pilnuje bezpieczeństwa</span>
-        </div>
-        <div id="sensors" class="sensors" aria-label="Stan czujników"></div>
-      </header>
-
-      <main class="views">
-        <figure class="camera">
-          <canvas id="oakCanvas"></canvas>
-          <figcaption class="cam-caption"><span>Kamera OAK-D Pro</span><span id="camMode" class="cam-mode"></span></figcaption>
-          <div class="pip">
-            <canvas id="depthCanvas"></canvas>
-            <span>Głębia ze stereo</span>
-          </div>
-        </figure>
-
-        <figure class="radar">
-          <figcaption class="radar-caption">
-            <span>LiDAR 360°</span>
-            <span class="radar-hint">Widok z góry. Przód robota jest skierowany do Ciebie.</span>
-          </figcaption>
-          <canvas id="radarCanvas"></canvas>
-          <ul class="legend">
-            <li><i class="sw sw-person"></i>osoba</li>
-            <li><i class="sw sw-fused"></i>osoba rozpoznana przez kamerę</li>
-            <li><i class="sw sw-hand"></i>Twoja dłoń</li>
-            <li><i class="sw sw-route"></i>planowany ruch</li>
-            <li><i class="sw sw-zone"></i><span id="zoneLegend">strefa 25 cm</span></li>
-          </ul>
-        </figure>
-      </main>
-
-      <section class="readouts">
-        <div class="state" id="stateBlock" data-tone="idle">
-          <h1 id="stateTitle">Łączę się z robotem</h1>
-          <p id="stateText">Za chwilę pojawi się obraz z kamer.</p>
-        </div>
-
-        <div class="gesture">
-          <div class="g-head">
-            <span id="gIcon" class="g-icon"></span>
-            <span id="gName" class="g-name">Brak dłoni</span>
-          </div>
-          <div class="meter"><span>pewność</span><div class="track"><i id="gConf"></i></div><b id="gConfV">–</b></div>
-          <div class="meter"><span>skręt</span><div class="track steer"><i id="gSteer"></i></div><b id="gSteerV">–</b></div>
-        </div>
-
-        <div class="distance" id="distBlock" data-tone="go">
-          <div class="d-value"><span id="dVal">–</span><small id="dUnit"></small></div>
-          <div class="d-label">do najbliższej przeszkody</div>
-          <div class="d-status" id="dStatus"></div>
-        </div>
-
-        <div class="drive">
-          <canvas id="wheelsCanvas"></canvas>
-          <dl class="drive-data">
-            <dt>Koła lewe</dt><dd id="wL">–</dd>
-            <dt>Koła prawe</dt><dd id="wR">–</dd>
-            <dt class="span" id="driveMode">–</dt>
-          </dl>
-        </div>
-      </section>
-
-      <footer class="credits">
-        <img id="logoKolo" src="/branding/kolo" alt="Koło Naukowe Machine Learning Politechniki Rzeszowskiej" />
-        <i class="credits-rule" aria-hidden="true"></i>
-        <img id="logoRzeszow" src="/branding/rzeszow" alt="Rzeszów – stolica innowacji" />
-      </footer>
-
-      <aside id="debug" class="panel hidden"></aside>
-      <aside id="help" class="panel hidden">
-        <h2>Obsługa stoiska</h2>
-        <table>
-          <tr><td><kbd>Spacja</kbd></td><td>Wstrzymaj robota albo wznów pracę</td></tr>
-          <tr><td><kbd>R</kbd></td><td>Naucz się tła stoiska od nowa (LiDAR)</td></tr>
-          <tr><td><kbd>V</kbd></td><td>Obróć radar: od strony widza lub robota</td></tr>
-          <tr><td><kbd>M</kbd></td><td>Włącz lub wyłącz lustrzany obraz kamery</td></tr>
-          <tr><td><kbd>D</kbd></td><td>Pokaż stan czujników i zdarzenia</td></tr>
-          <tr><td><kbd>F</kbd></td><td>Pełny ekran</td></tr>
-        </table>
-      </aside>
-      <div id="toast" class="toast hidden" role="status"></div>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#16181a">
+  <title>Człowiek kontra AI – autonomiczny łazik</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="fonts/barlow-condensed-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="shared/base.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="stage">
+    <!-- obraz z kamery na cały ekran (nad stopką) -->
+    <div class="cam-box" id="camBox">
+      <div class="cam-inner"><img id="cam" alt=""><canvas id="ov"></canvas></div>
+      <div class="cam-wait" id="camWait">Czekam na kamerę</div>
     </div>
-    <script type="module" src="/src/main.ts"></script>
-  </body>
+    <div class="shade-top" aria-hidden="true"></div>
+    <div class="shade-bottom" aria-hidden="true"></div>
+    <div class="alarm" aria-hidden="true"></div>
+
+    <!-- nagłówek jak na drugim monitorze stoiska -->
+    <header class="top">
+      <div class="mark">
+        <svg viewBox="0 0 40 40" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 12 L20 20 L10 28 M10 12 L10 28 M20 20 H31"/></g><circle cx="10" cy="12" r="3.2" fill="currentColor"/><circle cx="10" cy="28" r="3.2" fill="currentColor"/><circle cx="20" cy="20" r="3.2" fill="currentColor"/><circle cx="31" cy="20" r="3.6" fill="#6cb4ff"/></svg>
+        <span class="wordmark">Człowiek kontra AI</span>
+        <i class="wordmark-rule" aria-hidden="true"></i>
+        <span class="wordmark-sub">Autonomiczny łazik</span>
+      </div>
+      <span class="sim-badge" id="simBadge" hidden>Symulacja</span>
+    </header>
+
+    <section class="status" aria-live="polite">
+      <h1 id="title">Łączę się z robotem</h1>
+      <p id="line">To potrwa chwilę.</p>
+      <p class="record" id="record"></p>
+    </section>
+
+    <section class="hud">
+      <figure class="hud-wheels">
+        <canvas id="chassis"></canvas>
+        <figcaption>Koła</figcaption>
+      </figure>
+      <figure class="hud-radar">
+        <div class="disc"><canvas id="radar"></canvas></div>
+        <figcaption>Radar wokół robota</figcaption>
+      </figure>
+    </section>
+
+    <!-- stopka identyczna jak na drugim monitorze stoiska -->
+    <footer class="credits">
+      <img id="logoKolo" src="/branding/kolo" alt="Koło Naukowe Machine Learning Politechniki Rzeszowskiej" draggable="false">
+      <i class="credits-rule" aria-hidden="true"></i>
+      <img id="logoRzeszow" src="/branding/rzeszow" alt="Rzeszów – stolica innowacji" draggable="false">
+      <div class="diag" id="diag" aria-label="Stan czujników"></div>
+    </footer>
+
+    <!-- ukryta kalibracja radaru: 5 szybkich kliknięć w logo Koła + hasło obsługi -->
+    <div class="modal" id="calibAuth" hidden>
+      <div class="auth-box" id="authBox">
+        <h2>Kalibracja radaru</h2>
+        <p>Wpisz hasło obsługi stoiska</p>
+        <div class="auth-field" id="authField"></div>
+        <div class="auth-error" id="authError"></div>
+        <div class="keys" id="authKeys"></div>
+        <div class="actions">
+          <button type="button" class="btn ghost" id="authCancel">Anuluj</button>
+          <button type="button" class="btn" id="authOk">Dalej</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal" id="calib" hidden>
+      <div class="calib-box">
+        <div class="calib-top"><span id="calibStep">Krok 1 z 5</span><span>Kalibracja radaru</span></div>
+        <div class="calib-main">
+          <div class="calib-text">
+            <h2 id="calibTitle">–</h2>
+            <p id="calibHint"></p>
+            <ul class="calib-checks" id="calibChecks"></ul>
+            <p class="calib-msg" id="calibMsg"></p>
+          </div>
+          <div class="calib-figure">
+            <canvas id="calibDiagram"></canvas>
+            <div class="calib-count" id="calibCount"></div>
+          </div>
+        </div>
+        <div class="calib-progress"><div class="calib-bar"><i id="calibBar"></i></div><b id="calibPct">0%</b></div>
+        <div class="actions">
+          <button type="button" class="btn ghost" id="calibSkip" hidden>Pomiń ten krok</button>
+          <button type="button" class="btn ghost" id="calibCancel">Przerwij</button>
+          <button type="button" class="btn" id="calibClose" hidden>Zamknij</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="app.js"></script>
+</body>
 </html>

@@ -1,0 +1,24 @@
+# =============================================================================
+#  Nakładka dla Raspberry Pi 5: port 8000, autostart, dostęp do USB/UART z hot-plugiem.
+#  Użycie: docker compose -f docker-compose.yml -f docker-compose.rpi.yml up -d --build
+#
+#  Dlaczego /dev w całości + device_cgroup_rules zamiast listy "devices:":
+#   - lista "devices:" wywala start kontenera, gdy kabla nie ma, i nie widzi urządzeń
+#     wpiętych PÓŹNIEJ; montaż /dev pokazuje każde nowe urządzenie od razu,
+#   - OAK-D zmienia PID przy starcie (03e7:2485 -> 03e7:f63b) i pojawia się jako NOWY węzeł
+#     w /dev/bus/usb – reguła cgroup dla całej grupy 189 to obsługuje,
+#   - reguły cgroup dają dostęp tylko do tych klas urządzeń (bez privileged).
+# =============================================================================
+services:
+  robot:
+    restart: unless-stopped
+    ports: !override
+      - "8000:8000"
+    volumes:
+      - /dev:/dev
+      - /run/udev:/run/udev:ro
+    device_cgroup_rules:
+      - "c 188:* rmw"     # /dev/ttyUSB*  – mostki CP210x / CH340 (LiDAR D500, ESP32 przez USB)
+      - "c 166:* rmw"     # /dev/ttyACM*  – CDC-ACM (CH343/CH9102, natywne USB ESP32-S3)
+      - "c 189:* rmw"     # /dev/bus/usb/* – OAK-D Pro (DepthAI / libusb)
+      - "c 204:* rmw"     # /dev/ttyAMA*  – UART na GPIO (ESP32 w RaspRover, /dev/ttyAMA0)

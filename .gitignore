@@ -2,8 +2,11 @@
 __pycache__/
 *.pyc
 .venv/
-# Node / frontend
-node_modules/
-frontend/dist/
+.pytest_cache/
 # Lokalna konfiguracja
 .env
+# Pozostałości starego frontendu (Vite) – nieużywane, można usunąć
+node_modules/
+frontend/dist/
+# kalibracja zapisana na danym robocie
+data/
