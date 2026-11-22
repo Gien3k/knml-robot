@@ -99,7 +99,7 @@ def test_lidar_scan_shape_and_background():
 
 # --------------------------------------------------------------------------- zasady ruchu
 def make(**kw):
-    s = dataclasses.replace(Settings(), **{"shield_learn_s": 0.2, "attract": False, **kw})
+    s = dataclasses.replace(Settings(), **{"shield_learn_s": 0.2, "attract": False, "menu": False, **kw})
     hub = Hub(s)
     return hub, ControlLoop(hub, s), s
 
@@ -107,7 +107,7 @@ def make(**kw):
 def feed_lidar(hub, source, n=5):
     now = time.monotonic()
     for k in range(n):
-        hub.on_scan(np.full(360, 2.0), now - 0.05 * (n - k), source)
+        hub.on_scan(np.full(360, 2.0), now - 0.06 * (n - 1 - k), source)   # co 0,06 s do "teraz": zapas nad SHIELD_LEARN_S 0,2
 
 
 def open_hand(hub, dist=0.5):
@@ -174,3 +174,127 @@ def test_texts_for_visitors():
     assert d["decision"]["lidar"]["text"] == "CZYSTO"
     assert d["decision"]["decision"]["text"] == "JEDŹ"
     assert "bliżej" in d["header"]["text"]
+
+
+def test_game_takes_over_wheels_and_lens_returns_to_color():
+    """Gra (z RPS_WHEELS=1): dłoń nie prowadzi kół, koła "pompują" w rytm odliczania; ktoś gra -> ekran w kolorze."""
+    hub, ctl, s = make(rps_wheels=True)
+    hub.sim_active = True
+    feed_lidar(hub, "sim", 10)
+    now = time.monotonic()
+    hub.lens_request = "depth"
+    hub.cam_info = {}
+    hub.on_hand({"present": True, "gesture": "FIVE", "dist_m": 0.5, "x_norm": 0.5,
+                 "landmarks": [[0.5, 0.5]] * 21}, now, "sim")
+    ctl.step(now)
+    assert hub.lens["lens"] == "depth"                              # wybór ręczny wygrywa nawet z dłonią
+    hub.lens_request = "auto"
+    hub.game_request = "start"
+    pumped = []
+    t = now
+    for k in range(80):                                             # 4 s: wstęp + odliczanie
+        t = now + 0.05 * (k + 1)
+        hub.on_hand({"present": True, "gesture": "FIVE", "dist_m": 0.5, "x_norm": 0.5,
+                     "landmarks": [[0.5, 0.5]] * 21}, t, "sim")
+        out = ctl.step(t)
+        assert out.state != "DRIVE"                                  # otwarta dłoń nie jedzie w grze
+        if hub.game.get("phase") == "countdown":
+            pumped.append(abs(out.cmd_l))
+        hub.on_scan(np.full(360, 2.0), t, "sim")                    # świeży radar w czasie testu
+    assert hub.game["active"] is True
+    assert max(pumped) > 0                                           # koła w rytm "Papier – Kamień – Nożyce"
+    assert hub.lens["lens"] == "color" and hub.lens["scene"] == "live"
+    assert hub.oled and hub.oled[0] == "CZLOWIEK vs AI"
+
+
+def test_menu_blocks_wheels_until_drive_chosen_and_returns_after_idle():
+    """Ekran startowy: dłoń nie prowadzi kół, dopóki odwiedzający nie wybierze jazdy; bez dłoni -> menu."""
+    hub, ctl, s = make(menu=True, drive_idle_s=1.0)
+    hub.sim_active = True
+    t = time.monotonic()
+    for k in range(10):
+        hub.on_scan(np.full(360, 2.0), t + 0.05 * k, "sim")
+    hand = {"present": True, "gesture": "FIVE", "dist_m": 0.5, "x_norm": 0.5}
+
+    def run(seconds, with_hand=True):
+        nonlocal t
+        out = None
+        for _ in range(int(seconds / 0.05)):
+            t += 0.05
+            hub.on_scan(np.full(360, 2.0), t, "sim")
+            if with_hand:
+                hub.on_hand(dict(hand), t, "sim")
+            out = ctl.step(t)
+        return out
+
+    out = run(0.5)
+    assert hub.mode["mode"] == "menu" and out.state == "IDLE" and out.cmd_l == 0.0
+    hub.mode_request = "drive"
+    out = run(0.5)
+    assert hub.mode["mode"] == "drive" and out.state == "DRIVE"
+    out = run(1.6, with_hand=False)                                   # nikt nie steruje
+    assert hub.mode["mode"] == "menu"
+    hub.mode_request = "game"
+    run(0.2)
+    assert hub.mode["mode"] == "game" and hub.game["active"] is True
+    hub.mode_request = "menu"
+    run(0.2)
+    assert hub.mode["mode"] == "menu" and hub.game["active"] is False
+    # dwie otwarte strony: wybór z nieaktualnego ekranu nie przełącza (bez skakania gry tam i z powrotem)
+    sc = hub.mode["scene"]
+    hub.mode_request = ("drive", sc)
+    run(0.2)
+    assert hub.mode["mode"] == "drive" and hub.mode["scene"] != sc
+    hub.mode_request = ("game", sc)                                   # druga strona, spóźniona
+    run(0.2)
+    assert hub.mode["mode"] == "drive" and hub.game["active"] is False
+
+
+def test_critical_battery_stops_wheels_and_warns_staff():
+    hub, ctl, s = make()
+    for k in ("oak", "lidar", "esp32"):
+        hub.set_device(k, "real")
+    feed_lidar(hub, "lidar")
+    now = time.monotonic()
+    hub.esp32 = {"t": now, "voltage": 11.6}
+    open_hand(hub)
+    feed_lidar(hub, "lidar", 1)
+    ctl.step(now)
+    assert hub.battery == {"v": 11.6, "level": "ok"} and hub.drive["lock"] == ""
+    ctl2_hub, ctl2, _ = make()
+    for k in ("oak", "lidar", "esp32"):
+        ctl2_hub.set_device(k, "real")
+    feed_lidar(ctl2_hub, "lidar")
+    ctl2_hub.esp32 = {"t": time.monotonic(), "voltage": 9.9}          # ogniwa prawie puste
+    open_hand(ctl2_hub)
+    feed_lidar(ctl2_hub, "lidar", 1)
+    out = ctl2.step(time.monotonic())
+    assert ctl2_hub.battery["level"] == "critical"
+    assert ctl2_hub.drive["lock"] == "battery" and out.cmd_l == 0.0
+
+
+def test_far_hand_of_passerby_is_ignored():
+    hub, ctl, s = make()
+    hub.sim_active = True
+    feed_lidar(hub, "sim", 10)
+    hub.on_hand({"present": True, "gesture": "FIVE", "dist_m": 2.4, "x_norm": 0.5}, time.monotonic(), "sim")
+    out = ctl.step(time.monotonic())
+    assert out.sub == "no_hand"                                       # 2,4 m: to nie gracz
+
+
+def test_game_keeps_wheels_still_by_default():
+    """Domyślnie (RPS_WHEELS=0) w grze koła stoją: żadnego pompowania ani tańca."""
+    hub, ctl, s = make()
+    hub.sim_active = True
+    feed_lidar(hub, "sim", 10)
+    now = time.monotonic()
+    hub.cam_info = {}
+    hub.on_hand({"present": True, "gesture": "FIVE", "dist_m": 0.5, "x_norm": 0.5,
+                 "landmarks": [[0.5, 0.5]] * 21}, now, "sim")
+    hub.game_request = "start"
+    moved = []
+    for k in range(120):                                            # 6 s: wstęp, rozgrzewka, odliczanie
+        out = ctl.step(now + 0.05 * (k + 1))
+        if hub.game.get("active"):
+            moved.append(max(abs(out.cmd_l), abs(out.cmd_r)))
+    assert moved and max(moved) == 0.0

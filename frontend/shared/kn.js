@@ -1,6 +1,7 @@
 /* =============================================================================
    Wspólna warstwa ekranu stoiska (i wariantów w archiwum/).
-   Dane: WebSocket /ws (stan 20 Hz, skan LiDAR, konfiguracja), obraz: /stream.mjpg.
+   Dane: WebSocket /ws (stan 20 Hz, skan LiDAR, konfiguracja), obraz: /stream.mjpg,
+   "jak widzi robot" (głębia / podczerwień): /vision.mjpg.
    Każdy wariant ma własny układ i kolory, ale te same dane i te same komunikaty.
    Klawisze: M lustro kamery, R kalibracja radaru, F pełny ekran.
    ============================================================================= */
@@ -13,17 +14,29 @@ export const store = {
   state: null, scan: null, online: false, scale: 1,
   cfg: { max_speed: 0.5, shield_radius_m: 0.3, hfov_deg: 69, hand_near_m: 0.35, hand_far_m: 1.2, mirror: true, cam_offset: [0.1, 0] },
   brakeSeen: null, brakeAt: 0,
+  stale: false,           // serwer ma nowszą wersję ekranu -> przeładowanie przy najbliższej okazji
 };
 
 const listeners = [];
 export function onState(fn) { listeners.push(fn); }
 
-const pref = {
-  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
-  set(k, v) { try { localStorage.setItem(k, v); } catch { /* tryb prywatny */ } },
+// lustro ustawia serwer, wspólne dla wszystkich otwartych stron (dawne ustawienie z przeglądarki usuwamy)
+try { localStorage.removeItem("mirror"); } catch { /* tryb prywatny */ }
+/** Prędkość, którą robot właśnie wysyła do kół (po łagodnym rozruchu): -1..1 względem MAX_SPEED.
+ *  To samo źródło dla napisu "Jadę 50%" i dla panelu radaru, więc wartości zawsze się zgadzają. */
+export function wheelSpeed(s) {
+  const c = s && s.drive && s.drive.cmd;
+  if (!c) return 0;
+  return (c.L + c.R) / 2 / (store.cfg.max_speed || 0.5);
+}
+export const pct10 = (v) => Math.round(Math.abs(v) * 10) * 10;
+
+export const mirrored = () => (store.state && store.state.mirror != null ? !!store.state.mirror : !!store.cfg.mirror);
+/** Numer bieżącego ekranu (serwer pomija wybory zrobione na ekranie, którego już nie ma). */
+export const sceneQuery = () => {
+  const sc = store.state && store.state.mode && store.state.mode.scene;
+  return sc != null ? `?scene=${sc}` : "";
 };
-let mirrorPref = pref.get("mirror");
-export const mirrored = () => (mirrorPref === null ? !!store.cfg.mirror : mirrorPref === "1");
 
 // ------------------------------------------------------------------ scena 1920x1080
 export function stage(el) {
@@ -59,28 +72,50 @@ export function roundRect(ctx, x, y, w, h, r) {
 }
 
 // ------------------------------------------------------------------ połączenie i obraz
-let img = null, streamTimer = 0;
+let img = null, streamTimer = 0, vimg = null, visionTimer = 0;
 function restartStream() {
   if (!img) return;
   clearTimeout(streamTimer);
   img.src = `/stream.mjpg?t=${Date.now()}`;
 }
+function restartVision() {
+  if (!vimg) return;
+  clearTimeout(visionTimer);
+  vimg.src = `/vision.mjpg?t=${Date.now()}`;
+}
 
-export function connect(cameraImg) {
+/** cameraImg: <img> obrazu z kamery; visionImg (opcjonalnie): <img> głębi / podczerwieni. */
+/** Strona zgłasza serwerowi swoją wersję (GET /api/clients pokazuje, czy któraś karta ma stary kod). */
+const PAGE_ID = Math.random().toString(36).slice(2, 10);
+function hello() {
+  if (!store.pageBuild) return;
+  fetch("/api/hello", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: PAGE_ID, build: store.pageBuild }) }).catch(() => {});
+}
+setInterval(hello, 20000);
+
+export function connect(cameraImg, visionImg) {
   img = cameraImg || null;
+  vimg = visionImg || null;
   if (img) img.addEventListener("error", () => { clearTimeout(streamTimer); streamTimer = setTimeout(restartStream, 1000); });
+  if (vimg) vimg.addEventListener("error", () => { clearTimeout(visionTimer); visionTimer = setTimeout(restartVision, 1500); });
   let backoff = 400, last = 0, camWas = false;
   const open = () => {
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
-    ws.onopen = () => { store.online = true; backoff = 400; last = performance.now(); restartStream(); };
+    ws.onopen = () => { store.online = true; backoff = 400; last = performance.now(); restartStream(); restartVision(); };
     ws.onmessage = (ev) => {
       last = performance.now();
       let m;
       try { m = JSON.parse(ev.data); } catch { return; }
-      if (m.type === "config") store.cfg = { ...store.cfg, ...m };
+      if (m.type === "config") {
+        if (store.cfg.build && m.build && m.build !== store.cfg.build) store.stale = true;
+        if (!store.pageBuild && m.build) { store.pageBuild = m.build; hello(); }
+        store.cfg = { ...store.cfg, ...m };
+      }
       else if (m.type === "scan") store.scan = m;
       else if (m.type === "state") {
         store.state = m;
+        if (m.mirror != null && document.body.classList.contains("mirror") !== !!m.mirror) document.body.classList.toggle("mirror", !!m.mirror);
         const b = m.brake || {};
         if (store.brakeSeen === null) store.brakeSeen = b.t ?? 0;
         else if (b.t && b.t !== store.brakeSeen) { store.brakeSeen = b.t; store.brakeAt = performance.now(); }
@@ -121,10 +156,11 @@ export function phase(s) {
   }
   if (d.state === "ESTOP") return { key: "estop", step: 3, tone: "stop", title: "Hamuję", line: "Coś jest tuż przy robocie. Radar ma pierwszeństwo przed kamerą." };
   if (sh.live && !sh.ready) return { key: "learn", step: 1, tone: "route", title: "Poznaję stoisko", line: `Radar uczy się otoczenia: ${Math.round((sh.learn || 0) * 100)}%.` };
+  if (d.lock === "battery") return { key: "battery", step: 1, tone: "muted", title: "Robot odpoczywa", line: "Akumulatory są prawie puste. Obsługa podłączy ładowarkę." };
   if (d.lock === "calibration") return { key: "calib", step: 1, tone: "route", title: "Kalibracja radaru", line: "Obsługa stoiska ustawia robota. Koła są zablokowane." };
   if (d.lock === "no_camera") return { key: "wait", step: 1, tone: "muted", title: "Czekam na kamerę", line: "Za chwilę będzie można sterować dłonią." };
-  if (d.lock) return { key: "wait", step: 1, tone: "muted", title: "Czekam na radar", line: "Bez radaru robot nie rusza – to zabezpieczenie." };
-  if (d.state === "DRIVE") return { key: "drive", step: 2, tone: "go", title: `Jadę ${Math.round((d.throttle || 0) * 10) * 10}%`, line: "Przybliż dłoń do kamery, żeby przyspieszyć. Pięść to jazda do tyłu." };
+  if (d.lock) return { key: "wait", step: 1, tone: "muted", title: "Czekam na radar", line: "Bez radaru robot nie rusza. To zabezpieczenie." };
+  if (d.state === "DRIVE") return { key: "drive", step: 2, tone: "go", title: `Jadę ${Math.max(10, pct10(wheelSpeed(s)))}%`, line: "Przybliż dłoń do kamery, żeby przyspieszyć. Pięść to jazda do tyłu." };
   if (d.state === "REVERSE") return { key: "reverse", step: 2, tone: "route", title: "Cofam", line: "Otwórz dłoń, żeby jechać do przodu." };
   if (h && s.cam && s.cam.live) {
     if (d.sub === "too_close") return { key: "hand", step: 1, tone: "muted", title: "Trochę dalej", line: "Dłoń jest za blisko kamery. Odsuń ją na pół metra." };
@@ -158,9 +194,12 @@ const TIPS = new Set([4, 8, 12, 16, 20]);
 /** Rysuje na płótnie leżącym dokładnie na <img> z object-fit: cover (lustro robi CSS rodzica). */
 export function drawHand(canvas, image, t) {
   const { ctx, W, H } = fitCanvas(canvas);
-  ctx.clearRect(0, 0, W, H);
   const s = store.state;
-  if (!(s && s.cam && s.cam.live)) return;
+  // pełnoekranowe płótno czyścimy tylko, gdy coś na nim było (Raspberry: mniej pracy, mniej ciepła)
+  const busy = !!(s && s.cam && s.cam.live && (s.hand || (t.people && s.people && s.people.length)));
+  if (canvas._drawn || busy) ctx.clearRect(0, 0, W, H);
+  canvas._drawn = busy;
+  if (!busy) return;
   const ia = image.naturalWidth && image.naturalHeight ? image.naturalWidth / image.naturalHeight : 16 / 9;
   const dw = Math.max(W, H * ia), dh = dw / ia, ox = (W - dw) / 2, oy = (H - dh) / 2;
   const map = (x, y) => [ox + x * dw, oy + y * dh];
@@ -169,7 +208,8 @@ export function drawHand(canvas, image, t) {
     ctx.strokeStyle = t.people;
     ctx.lineWidth = 2;
     ctx.lineCap = "round";
-    for (const p of s.people || []) {
+    const near = (s.people || []).slice().sort((a, b) => (a.dist_m ?? 99) - (b.dist_m ?? 99)).slice(0, 5);
+    for (const p of near) {
       const [x0, y0] = map(p.bbox[0], p.bbox[1]), [x1, y1] = map(p.bbox[2], p.bbox[3]);
       if (x1 - x0 < 10 || y1 - y0 < 10) continue;
       const L = Math.min(24, (x1 - x0) * 0.22, (y1 - y0) * 0.22);
@@ -178,6 +218,22 @@ export function drawHand(canvas, image, t) {
         ctx.moveTo(cx + dx * L, cy); ctx.lineTo(cx, cy); ctx.lineTo(cx, cy + dy * L);
       }
       ctx.stroke();
+      // odległość nad osobą (widok głębi); tekst odwrócony z powrotem, bo cały obraz jest lustrem
+      if (t.labels && p.dist_m != null) {
+        const text = `${fmt(p.dist_m, 1)} m`;
+        ctx.save();
+        ctx.font = "600 20px Barlow, sans-serif";
+        const tw = ctx.measureText(text).width + 22, th = 32;
+        const cx = clamp((x0 + x1) / 2, tw / 2 + 4, W - tw / 2 - 4);
+        const ty = Math.max(t.labelTop ?? 96, y0 - th - 8);      // nie wchodzi na nagłówek
+        ctx.translate(cx, ty);
+        if (mirrored()) ctx.scale(-1, 1);
+        ctx.fillStyle = "rgba(15,17,18,0.78)";
+        roundRect(ctx, -tw / 2, 0, tw, th, th / 2); ctx.fill();
+        ctx.fillStyle = t.labels; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText(text, 0, th / 2 + 1);
+        ctx.restore();
+      }
     }
   }
   const h = s.hand;
@@ -197,6 +253,17 @@ export function drawHand(canvas, image, t) {
     const [a0, a1] = [map(h.bbox[0], h.bbox[1]), map(h.bbox[2], h.bbox[3])];
     roundRect(ctx, a0[0] - 6, a0[1] - 6, a1[0] - a0[0] + 12, a1[1] - a0[1] + 12, 12);
     ctx.strokeStyle = t.hand; ctx.lineWidth = 3.5; ctx.stroke();
+  }
+  // "przytrzymaj": pierścień wokół dłoni, gdy kciuk w górę uruchamia grę (t.ring 0..1)
+  if (t.ring > 0 && h.landmarks && h.landmarks.length === 21) {
+    const p = h.landmarks.map(([x, y]) => map(x, y));
+    const c = [0, 5, 9, 13, 17].reduce((a, i) => [a[0] + p[i][0] / 5, a[1] + p[i][1] / 5], [0, 0]);
+    const r = Math.max(60, 1.9 * Math.hypot(p[9][0] - p[0][0], p[9][1] - p[0][1]));
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "rgba(243,241,234,0.22)"; ctx.lineWidth = 10;
+    ctx.beginPath(); ctx.arc(c[0], c[1], r, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = t.hand; ctx.lineWidth = 10;
+    ctx.beginPath(); ctx.arc(c[0], c[1], r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, t.ring)); ctx.stroke();
   }
 }
 
@@ -344,8 +411,9 @@ export function controls() {
   addEventListener("keydown", (e) => {
     if (document.body.dataset.modal) return;      // okno kalibracji: bez skrótów
     const k = e.key.toLowerCase();
-    if (k === "r") fetch("/api/recalibrate", { method: "POST" }).catch(() => {});
-    else if (k === "m") { mirrorPref = mirrored() ? "0" : "1"; pref.set("mirror", mirrorPref); document.body.classList.toggle("mirror", mirrored()); }
+    // R (nauka tła radaru) i M (lustro) tylko z Shiftem: przypadkowe naciśnięcie nie psuje stoiska
+    if (k === "r" && e.shiftKey) fetch("/api/recalibrate", { method: "POST" }).catch(() => {});
+    else if (k === "m" && e.shiftKey) fetch("/api/mirror", { method: "POST" }).catch(() => {});      // dla wszystkich ekranów
     else if (k === "f") {
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
       else document.documentElement.requestFullscreen().catch(() => {});
@@ -379,8 +447,13 @@ export function controls() {
   }, 30000);
 }
 
+/** Kiosk na samym Raspberry: 20 klatek/s zamiast 30, bo rysowanie mocno grzeje procesor. Rozpoznanie po adresie
+ *  (kiosk otwiera serwer robota przez localhost:8000); po napisie przeglądarki się nie da, bo Chromium na Raspberry
+ *  przedstawia się jako "Linux x86_64". */
+export const ON_PI = ["localhost", "127.0.0.1"].includes(location.hostname) && location.port === "8000";
+
 /** Pętla rysowania z limitem klatek (30/s wystarcza do płynnego radaru i kół, a odciąża Raspberry). */
-export function loop(fn, maxFps = 30) {
+export function loop(fn, maxFps = ON_PI ? 20 : 30) {
   let last = performance.now(), lastDraw = 0;
   const minGap = 1000 / maxFps - 2;
   const frame = (now) => {

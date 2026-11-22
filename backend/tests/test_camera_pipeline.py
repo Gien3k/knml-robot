@@ -24,6 +24,23 @@ HT_DIR = os.path.join(VENDOR, "depthai_hand_tracker")
 PERSON_BLOB = os.path.join(VENDOR, "models", "mobilenet-ssd_openvino_2021.4_4shave.blob")
 
 
+@pytest.fixture(autouse=True)
+def _strict_fps_clock(monkeypatch):
+    """Licznik FPS hand trackera dzieli przez różnicę czasów; atrapa kamery daje klatki natychmiast,
+    a zegar Windowsa ma rozdzielczość ~15 ms -> dzielenie przez zero. Tylko w tym module: zegar rosnący."""
+    import sys
+    import types
+    if HT_DIR not in sys.path:
+        sys.path.insert(0, HT_DIR)
+    import FPS as fps_mod
+    t = [1000.0]
+
+    def mono():
+        t[0] += 0.01
+        return t[0]
+    monkeypatch.setattr(fps_mod, "time", types.SimpleNamespace(monotonic=mono, perf_counter=mono))
+
+
 def open_hand_rrn():
     """21 punktów (x, y, z) otwartej dłoni w obróconym prostokącie (palce do góry)."""
     pts = [(0.5, 0.9, 0)]
@@ -82,7 +99,7 @@ class FakeDevice:
         res = {"lm_score": [0.93], "handedness": [0.8], "rect_center_x": [0.5], "rect_center_y": [0.5],
                "rect_size": [0.3], "rotation": [0.0], "rrn_lms": [open_hand_rrn()],
                "sqn_lms": [[v for i in range(21) for v in (0.30 + 0.01 * i, (pad_h + 200 + 3 * i) / frame_size)]],
-               "world_lms": [0], "xyz": [[-80.0, 30.0, 620.0]], "xyz_zone": [[0, 0, 10, 10]],
+               "world_lms": [[0.01 * (i % 7) for i in range(63)]], "xyz": [[-80.0, 30.0, 620.0]], "xyz_zone": [[0, 0, 10, 10]],
                "pd_inf": 1, "nb_lm_inf": 1}
         self.q = {"cam_out": FakeQueue(FakeMsg(frame=np.zeros((img_h, img_w, 3), np.uint8)) for _ in range(self.frames)),
                   "manager_out": FakeQueue(FakeMsg(data=marshal.dumps(res)) for _ in range(self.frames)),
@@ -107,7 +124,11 @@ class FakeDevice:
         pipeline.serializeToJson()              # potok musi dać się zserializować
 
     def getOutputQueue(self, name, maxSize=1, blocking=False):
-        return self.q[name]
+        return self.q[name] if name in self.q else FakeQueue([])
+
+    def getInputQueue(self, name, maxSize=1, blocking=False):
+        self.inqs = getattr(self, "inqs", {})
+        return self.inqs.setdefault(name, FakeInQueue())
 
     def setIrLaserDotProjectorIntensity(self, v):
         self.ir = v
@@ -161,6 +182,7 @@ def test_hand_tracker_pipeline_and_host_path(monkeypatch):
     hand = data[0]["hand"]
     assert hand["gesture"] == "FIVE"
     assert hand["dist_m"] == pytest.approx(0.62)
+    assert len(hand["world"]) == 21 and len(hand["world"][0]) == 3      # punkty 3D dla rozpoznania gestów
     assert len(hand["landmarks"]) == 21
     assert all(0.0 <= x <= 1.0 and 0.0 <= y <= 1.0 for x, y in hand["landmarks"])
     assert data[0]["jpeg"][:2] == b"\xff\xd8" and data[0]["w"] == 640 and data[0]["h"] == 360
@@ -221,3 +243,92 @@ def test_fallback_pipeline_builds():
     p.serializeToJson()
     names = {n.getName() for n in p.getAllNodes()}
     assert {"ColorCamera", "StereoDepth", "MonoCamera", "XLinkOut"} <= names
+
+
+# --------------------------------------------------------------------------- "jak widzi robot"
+class FakeFrame:
+    def __init__(self, arr):
+        self.arr = arr
+
+    def getFrame(self):
+        return self.arr
+
+    def getCvFrame(self):
+        return self.arr
+
+
+class FakeInQueue:
+    def __init__(self):
+        self.sent = []
+
+    def send(self, buf):
+        self.sent.append([int(v) for v in buf.getData()])
+
+
+class Ctrl:
+    """Pipe od rodzica z wyborem soczewki."""
+
+    def __init__(self, msgs):
+        self.msgs = list(msgs)
+
+    def poll(self):
+        return bool(self.msgs)
+
+    def recv(self):
+        return self.msgs.pop(0)
+
+
+class VisionDevice(FakeDevice):
+    last = None
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.q["vision_depth"] = FakeQueue(FakeFrame(np.full((540, 960), 900, np.uint16)) for _ in range(self.frames))
+        self.q["vision_ir"] = FakeQueue(FakeFrame(np.full((400, 640), 60, np.uint8)) for _ in range(self.frames))
+        self.inq = FakeInQueue()
+        VisionDevice.last = self
+
+    def getInputQueue(self, name, maxSize=1, blocking=False):
+        assert name in (camera_worker.VISION_CTRL, camera_worker.PERSON_CTRL)
+        if name == camera_worker.VISION_CTRL:
+            return self.inq
+        self.pinq = getattr(self, "pinq", None) or FakeInQueue()
+        return self.pinq
+
+
+def test_vision_gate_added_and_depth_reaches_host(monkeypatch):
+    """Bramka głębi / podczerwieni na VPU: węzły, sterowanie z hosta, pokolorowana głębia do rodzica."""
+    monkeypatch.setattr(dai, "Device", VisionDevice)
+    conn = Conn()
+    with pytest.raises(RuntimeError, match="Communication exception"):
+        camera_worker._run_tracker(dai, conn, CFG, camera_worker.CameraStarted(), persons=True,
+                                   vision=True, ctrl=Ctrl([{"lens": "depth"}, {"persons": False}]))
+    names = node_names(FakeDevice.started)
+    assert names.count("Script") == 3 and names.count("XLinkIn") == 2     # menedżer + osoby + bramka; 2 sterowania
+    ready = conn.msgs[0]
+    assert ready["vision"] is True and "głębia/podczerwień na ekran: tak" in ready["detail"]
+    assert VisionDevice.last.inq.sent == [[1]]                              # 1 = głębia
+    assert VisionDevice.last.pinq.sent == [[0]]                             # gra: wykrywanie osób wstrzymane
+    assert VisionDevice.last.ir == 0.3                                      # projektor tylko przy widoku głębi
+    assert "tylko przy widoku głębi" in ready["detail"]
+    compile(camera_worker.PERSON_THROTTLE_SCRIPT.replace("EVERY", "4"), "person_throttle", "exec")
+    vis = [m for m in conn.msgs if m["type"] == "vision"]
+    assert vis and all(m["lens"] == "depth" for m in vis)                   # podczerwień nie idzie, gdy niewybrana
+    assert vis[0]["jpeg"].startswith(bytes([0xFF, 0xD8])) and vis[0]["w"] == 960
+    compile(camera_worker.VISION_SCRIPT.replace("EVERY", "3"), "vision_gate", "exec")
+
+
+def test_main_drops_vision_gate_when_vpu_refuses(monkeypatch):
+    class NoGateDevice(VisionDevice):
+        def startPipeline(self, pipeline):
+            if "XLinkIn" in node_names(pipeline):
+                raise RuntimeError("Not enough memory for the pipeline")
+            super().startPipeline(pipeline)
+
+    monkeypatch.setattr(dai, "Device", NoGateDevice)
+    monkeypatch.setattr(camera_worker.time, "sleep", lambda s: None)
+    conn = Conn()
+    camera_worker.main(conn, {**CFG, "vision": True}, Ctrl([]))
+    ready = [m for m in conn.msgs if m["type"] == "ready"]
+    assert len(ready) == 1 and ready[0]["mode"] == "nn"
+    assert ready[0]["vision"] is False and "obraz głębi wyłączony" in ready[0]["detail"]

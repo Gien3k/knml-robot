@@ -14,7 +14,10 @@ import time
 
 from .config import Settings
 from .hub import Hub
+from .protocol import waveshare
 from .logic.drive import DRIVE, ESTOP, IDLE, REVERSE, DriveInputs, DriveLogic, DriveOutput, DriveParams, HandObs
+from .logic.rps import GestureVote, RpsGame, RpsParams, classify_hand
+from .logic.vision import LensDirector, parse_scenes
 
 log = logging.getLogger("control")
 
@@ -45,7 +48,7 @@ def header_text(out: DriveOutput, lock: str, s: Settings) -> tuple[str, str]:
     if out.state == REVERSE:
         return "Pięść to jazda do tyłu · Otwórz dłoń, aby jechać do przodu", "accent"
     if out.sub == "too_close":
-        return (f"Trochę dalej · Trzymaj dłoń {_cm(s.hand_near_m)}–{_cm(s.hand_far_m)} cm od kamery",
+        return (f"Trochę dalej · Trzymaj dłoń od {_cm(s.hand_near_m)} do {_cm(s.hand_far_m)} cm od kamery",
                 "accent")
     if out.sub == "too_far":
         return "Podejdź bliżej · Pokaż otwartą dłoń z odległości ok. 1 metra", "accent"
@@ -100,6 +103,18 @@ class ControlLoop(threading.Thread):
         super().__init__(daemon=True, name="control")
         self.hub, self.s = hub, settings
         self.logic = DriveLogic(DriveParams.from_settings(settings))
+        self.game = RpsGame(RpsParams.from_settings(settings))
+        self.lens = LensDirector(parse_scenes(settings.vision_scenes), enabled=settings.vision_enable)
+        self._last_state = IDLE
+        self.mode = "menu" if settings.menu else "drive"
+        self.vote = GestureVote()
+        self._volt: float | None = None
+        self._battery = "ok"
+        self._drive_seen = 0.0
+        # numer ekranu: zmienia się przy każdej zmianie trybu i każdym nowym meczu. Wybór dłonią przychodzi
+        # z numerem ekranu, na którym go zrobiono; spóźniony wybór z innej otwartej strony jest pomijany
+        self.scene = 0
+        self._scene_key: tuple | None = None
         self._halt = threading.Event()
 
     def stop(self) -> None:
@@ -119,6 +134,24 @@ class ControlLoop(threading.Thread):
             if delay < 0:
                 nxt, delay = time.monotonic(), 0.0
             self._halt.wait(delay)
+
+    def _drive_gesture(self, h: dict) -> str | None:
+        """Gest do jazdy: nasz klasyfikator (3D, jeśli są punkty) + głosowanie z kilku klatek.
+        Tryb zapasowy kamery (bez punktów dłoni) zostawia gest z detektora głębi."""
+        if not (h.get("world") or h.get("landmarks")):
+            return h.get("gesture")
+        g = self.vote.update(h.get("t"), classify_hand(h))
+        return {"paper": "FIVE", "rock": "FIST", "scissors": "PEACE"}.get(g)
+
+    def _request(self, req) -> str | None:
+        """("game", 12) -> "game", jeśli 12 to bieżący ekran; samo "game" (API, testy) zawsze przechodzi."""
+        if req is None or isinstance(req, str):
+            return req
+        action, scene = req
+        if scene is not None and scene != self.scene:
+            log.info("Pominięto spóźniony wybór %s z ekranu %s (teraz %s)", action, scene, self.scene)
+            return None
+        return action
 
     def step(self, now: float) -> DriveOutput:
         hub, s = self.hub, self.s
@@ -149,20 +182,97 @@ class ControlLoop(threading.Thread):
         if hub.calib_active:
             lock = "calibration"
 
+        # akumulatory: słabe -> ostrzeżenie dla obsługi, krytyczne -> koła stoją (chroni zasilanie Raspberry)
+        tel = hub.esp32
+        v = tel.get("voltage") if tel.get("t") and now - tel["t"] < 3.0 else None
+        if v is not None and v >= waveshare.NO_BATTERY_V:
+            self._volt = v if self._volt is None else self._volt + (v - self._volt) * 0.02   # ~2,5 s średnia
+            if self._volt < s.battery_critical_v:
+                self._battery = "critical"
+            elif self._battery == "critical" and self._volt > s.battery_critical_v + 0.3:
+                self._battery = "low"
+            elif self._battery != "critical":
+                self._battery = "low" if self._volt < s.battery_low_v else (
+                    "ok" if self._volt > s.battery_low_v + 0.2 else self._battery)
+        else:
+            self._volt, self._battery = None, "ok"
+        hub.battery = None if self._volt is None else {"v": round(self._volt, 2), "level": self._battery}
+        if self._battery == "critical" and not sim and not lock:
+            lock = "battery"
+
+        h = hub.hand if cam_live else None
+        # dłoń gracza: świeża i blisko (przechodzień 2-3 m za graczem nie przejmie gry ani menu)
+        hand_fresh = (h is not None and h.get("present") and now - h["t"] <= s.perception_timeout_s
+                      and (h.get("dist_m") is None or h["dist_m"] <= s.player_max_dist_m))
+
+        # ---------- gra: papier, kamień, nożyce (punkty dłoni są tylko w trybie sieci NN) ----------
+        game_ok = (s.rps_enable and cam_live and (sim or hub.cam_info.get("mode") == "nn")
+                   and not hub.calib_active)
+        req, hub.game_request = self._request(hub.game_request), None
+        if req == "start" and game_ok:
+            self.game.start(now)
+        elif req == "stop":
+            self.game.stop(now)
+
+        # ---------- tryb ekranu: menu -> jazda / gra (wybór na ekranie startowym) ----------
+        mreq, hub.mode_request = self._request(hub.mode_request), None
+        if s.menu and mreq:
+            if mreq == "game" and game_ok:
+                self.game.start(now)
+            elif mreq == "drive":
+                self.game.stop(now)
+                self.mode, self._drive_seen = "drive", now
+            elif mreq == "menu":
+                self.game.stop(now)
+                self.mode = "menu"
+        thumb_ok = self._last_state == IDLE and (not s.menu or self.mode == "menu")
+        self.game.update(now, h if hand_fresh else None, available=game_ok, can_start=thumb_ok)
+        playing = self.game.active
+        if s.menu:
+            if playing:
+                self.mode = "game"
+            elif self.mode == "game":
+                self.mode = "menu"                          # koniec gry -> ekran startowy
+        drive_on = not s.menu or self.mode == "drive"
+
         obs = None
         if cam_live:
-            h = hub.hand
-            if h is not None and h.get("present"):
-                obs = HandObs(t=h["t"], present=True, gesture=h.get("gesture"),
+            if hand_fresh and not playing and drive_on:
+                obs = HandObs(t=h["t"], present=True, gesture=self._drive_gesture(h),
                               dist_m=h.get("dist_m"), x_norm=h.get("x_norm"))
             else:
-                obs = HandObs(t=hub.cam_t, present=False)
+                obs = HandObs(t=hub.cam_t, present=False)       # w menu i w grze dłoń nie prowadzi kół
 
         out = self.logic.step(DriveInputs(now=now, hand=obs, shield_active=bool(st.active and lidar_live),
-                                          actuation_ok=not lock))
+                                          actuation_ok=not lock,
+                                          override=self.game.wheels(now) if playing else None))
+        self._last_state = out.state
         hub.drive_cmd = {"L": out.cmd_l, "R": out.cmd_r, "t": now, "allowed": not lock}
         if out.estop_edge:
             hub.estop_event.set()
+        hub.game = self.game.view(now, available=game_ok)
+        back_in = None
+        if s.menu and self.mode == "drive":
+            if hand_fresh or out.state != IDLE:
+                self._drive_seen = now
+            back_in = s.drive_idle_s - (now - self._drive_seen)
+            if back_in <= 0:
+                self.mode, back_in = "menu", None             # nikt nie steruje -> ekran startowy
+        key = (self.mode, playing, self.game.match_no)
+        if key != self._scene_key:
+            self._scene_key, self.scene = key, self.scene + 1
+        hub.mode = {"mode": self.mode, "menu": s.menu, "scene": self.scene,
+                    "back_in": None if back_in is None or back_in > s.drive_idle_s - 2.0 else round(back_in, 1)}
+        hub.oled = self.game.oled() if s.oled else None
+
+        # ---------- co pokazuje ekran: kolor / głębia / podczerwień ----------
+        lreq, hub.lens_request = hub.lens_request, None
+        if lreq:
+            self.lens.choose(lreq, now)
+        vision_ok = bool(s.vision_enable and cam_live and (sim or hub.cam_info.get("vision")))
+        near_hand = hand_fresh and (h.get("dist_m") is None or h["dist_m"] <= s.hand_far_m + 0.5)
+        busy = playing or near_hand or out.state != IDLE or lock == "calibration"
+        hub.lens = {**self.lens.update(now, busy, vision_ok, game_ok), "available": vision_ok}
 
         header, tone = header_text(out, lock, s)
         hub.drive = {

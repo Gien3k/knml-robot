@@ -121,9 +121,31 @@ class Hub:
         self.cam_t = 0.0                        # ostatnia wiadomość z kamery
         self.cam_info: dict = {}
 
+        # --- "jak widzi robot": głębia / podczerwień (osobny strumień MJPEG) ---
+        self.vision_slot = LatestSlot()         # (jpeg: bytes, meta: dict)
+        self.vision_t = 0.0                     # ostatnia klatka (monotonic)
+        self.vision_lens: str | None = None     # czego dotyczy ostatnia klatka: depth | ir
+        self.lens: dict = {"lens": "color", "scene": "drive", "auto": True, "progress": 0.0}
+        self.lens_request: str | None = None    # wybór z ekranu / API (color | depth | ir | auto)
+
+        # --- tryb ekranu: menu (wybór gry) | drive (jazda dłonią) | game (papier, kamień, nożyce) ---
+        self.mode: dict = {"mode": "menu" if s.menu else "drive", "menu": s.menu, "back_in": None}
+        # wybór z ekranu: (drive | game | menu, numer ekranu, na którym go zrobiono albo None)
+        self.mode_request: tuple[str, int | None] | str | None = None
+        # lustro obrazu wspólne dla wszystkich ekranów (kursor dłoni wszędzie trafia w tę samą kartę)
+        self.mirror: bool = bool(settings.oak_mirror)
+        self.clients: dict[str, dict] = {}      # otwarte strony: {id: {build, ua, t}} (POST /api/hello)
+
+        # --- gra: papier, kamień, nożyce ---
+        self.game: dict = {"active": False, "available": False}
+        self.game_request: tuple[str, int | None] | str | None = None    # start | stop (+ numer ekranu)
+        self.oled: list[str] | None = None      # 4 linie na ekranik łazika; None = ekran firmware'u
+
         # --- LiDAR + tarcza + ludzie ---
         self.shield = Shield(s.shield_radius_m, s.shield_margin_m, s.shield_hysteresis_m,
-                             s.shield_release_s, s.shield_learn_s)
+                             s.shield_release_s, s.shield_learn_s,
+                             absorb_s=s.shield_absorb_s, forget_s=s.shield_forget_s)
+        self.moved_t = 0.0                      # kiedy radar wykrył przesunięcie robota
         self.shield_state = ShieldState(radius_m=s.shield_radius_m)
         self.people = PeopleTracker()
         self.scan: dict | None = None
@@ -139,6 +161,7 @@ class Hub:
         self.drive_cmd = {"L": 0.0, "R": 0.0, "t": 0.0, "allowed": False}
         self.wheels: dict | None = None         # prędkości zmierzone / symulowane
         self.esp32: dict = {}                   # telemetria (napięcie itd.)
+        self.battery: dict | None = None        # {"v": 11.4, "level": ok|low|critical}
 
         # --- czas reakcji hamulca ---
         self.brake: dict = {"last_s": None, "wheels_s": None, "record_s": None, "count": 0,
@@ -150,6 +173,7 @@ class Hub:
     # ------------------------------------------------------------------ ogólne
     def bind(self, loop: asyncio.AbstractEventLoop) -> None:
         self.frame_slot.bind(loop)
+        self.vision_slot.bind(loop)
 
     def event(self, level: str, msg: str) -> None:
         self.events.append({"t": time.time(), "level": level, "msg": msg})
@@ -171,8 +195,15 @@ class Hub:
                 self.people.reset()
                 self._scan_source = source
             prev = self.shield_state.active
-            st = self.shield.update(ranges, now)
+            moving = self.wheels_moving(now)
+            st = self.shield.update(ranges, now, absorb_ok=not moving)
             self.shield_state = st
+            if st.moved:
+                self.moved_t = now
+                self.people.reset()
+                self.event("warn", "LiDAR: robot przesunięty – ponowna nauka tła (koła stoją)")
+            if st.absorbed:
+                log.info("LiDAR: %d koszyków nieruchomego przedmiotu wchłoniętych do tła", st.absorbed)
 
             # ludzie: obiekty z LiDAR-u + potwierdzenie osobami z kamery
             self.people.update(clusters(ranges, st.fg_bins, self.s.people_max_range_m) if st.ready else [], now)
@@ -186,8 +217,9 @@ class Hub:
                          "cam_only": [cam[i]["map"] for i in unmatched
                                       if cam[i]["dist_m"] <= self.s.people_max_range_m]}
         if st.active and not prev:
-            self.estop_event.set()
-            self._brake_start(st.trigger_t if st.trigger_t is not None else now, now)
+            self.estop_event.set()                  # stop kół zawsze
+            if moving:                              # pomiar "Stop w 0,1 s" tylko, gdy koła się kręciły
+                self._brake_start(st.trigger_t if st.trigger_t is not None else now, now)
             self.event("warn", "LiDAR: wtargnięcie w strefę bezpieczeństwa – STOP")
         elif self._brake_pending and "t_sent" not in self._brake_pending and now - self._brake_pending["t_decide"] > 1.0:
             self._brake_finish(self._brake_pending["t_decide"])     # ESP32 nie potwierdził – czas decyzji
@@ -231,13 +263,33 @@ class Hub:
     def on_frame(self, jpeg: bytes, w: int, h: int) -> None:
         self.frame_slot.publish((jpeg, {"w": w, "h": h, "t": time.time()}))
 
+    def on_vision(self, jpeg: bytes, lens: str, w: int, h: int) -> None:
+        """Klatka głębi (pokolorowana) albo podczerwieni – tylko gdy ekran ją pokazuje."""
+        self.vision_t = time.monotonic()
+        self.vision_lens = lens
+        self.vision_slot.publish((jpeg, {"w": w, "h": h, "lens": lens, "t": time.time()}))
+
+    def vision_live(self, now: float) -> str | None:
+        """Soczewka, z której przychodzą świeże klatki (None = brak / stare)."""
+        return self.vision_lens if self.vision_t and now - self.vision_t < 1.0 else None
+
     def clear_camera(self) -> None:
         self.hand = None
         self.cam_people = {"t": 0.0, "list": [], "source": None}
         self.cam_t = 0.0
         self.cam_info = {}
+        self.vision_t = 0.0
+        self.vision_lens = None
 
     # ------------------------------------------------------------------ koła i hamulec
+    def wheels_moving(self, now: float) -> bool:
+        """Koła się kręcą albo robot ma polecenie ruchu (tylko wtedy hamowanie ma sens dla widza)."""
+        w = self.wheels
+        if w is not None and now - w.get("t", now) <= 1.0 and max(abs(w["L"]), abs(w["R"])) > WHEELS_MOVING:
+            return True
+        c = self.drive_cmd
+        return bool(c.get("allowed")) and max(abs(c["L"]), abs(c["R"])) > 0.02 and abs(now - c.get("t", 0.0)) < 0.5
+
     def on_wheels(self, left: float, right: float, source: str, now: float) -> None:
         self.wheels = {"L": left, "R": right, "source": source, "t": now}
         p = self._brake_pending

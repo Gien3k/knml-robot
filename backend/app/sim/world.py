@@ -32,22 +32,24 @@ class Phase:
     name: str
     pos: tuple[float, float]       # gdzie stoi kierowca
     reach: float                   # jak daleko przed sobą trzyma dłoń
-    lateral: float                 # przesunięcie dłoni w jego prawo [m]
-    hand: str | None               # open | fist | None
+    lateral: float                 # przesunięcie dłoni [m]: + = w prawo NA EKRANIE (przy lustrze, OAK_MIRROR=1)
+    hand: str | None               # open | fist | scissors | thumb | game (pozę dyktuje gra) | None
     poke: bool = False             # druga ręka w tarczy LiDAR-u
 
 
 SCRIPT = (
     Phase(5.0, "approach", (1.30, 0.00), 0.15, 0.0, None),
     Phase(1.5, "idle", (1.30, 0.00), 0.15, 0.0, None),
+    Phase(2.8, "pick_drive", (1.20, 0.00), 0.38, -0.22, "open"),  # ekran startowy: dłoń nad kartą jazdy (lewa)
     Phase(3.5, "drive_far", (1.30, 0.00), 0.30, 0.0, "open"),
     Phase(3.5, "drive_near", (1.05, 0.00), 0.48, 0.0, "open"),
-    Phase(3.0, "steer_a", (1.10, 0.00), 0.42, 0.20, "open"),
-    Phase(3.0, "steer_b", (1.10, 0.00), 0.42, -0.20, "open"),
     Phase(3.0, "fist", (1.15, 0.00), 0.40, 0.0, "fist"),
     Phase(2.0, "drive_mid", (1.15, 0.00), 0.38, 0.0, "open"),
     Phase(4.0, "poke", (1.15, 0.00), 0.38, 0.0, "open", poke=True),
     Phase(2.0, "drive_mid2", (1.15, 0.00), 0.38, 0.0, "open"),
+    Phase(9.5, "rest", (1.25, 0.00), 0.15, 0.0, None),            # bez dłoni -> powrót do menu
+    Phase(2.8, "pick_game", (1.20, 0.00), 0.38, 0.22, "open"),     # dłoń nad kartą gry (prawa)
+    Phase(64.0, "play", (1.15, 0.00), 0.40, 0.0, "game"),       # rozgrzewka, gra do 3 wygranych, wynik, "Menu"
     Phase(4.0, "leave", (3.40, -2.20), 0.15, 0.0, None),
     Phase(14.0, "away", (4.60, -3.60), 0.15, 0.0, None),
 )
@@ -77,8 +79,10 @@ def _u(v: np.ndarray) -> np.ndarray:
 
 class SimWorld:
     def __init__(self, cam_x: float = 0.10, cam_y: float = 0.0, cam_h: float = 0.95,
-                 hfov_deg: float = 69.0, seed: int = 7) -> None:
+                 hfov_deg: float = 69.0, seed: int = 7, mirror: bool = True) -> None:
         self.lock = threading.Lock()
+        # strona ekranu zależy od lustra obrazu: bez lustra ruch w prawo widać na ekranie w lewo
+        self.screen_sign = 1.0 if mirror else -1.0
         self.rng = random.Random(seed)
         self.t0: float | None = None
         self._last: float | None = None
@@ -110,8 +114,12 @@ class SimWorld:
         self.lateral = 0.0
         self.hand_vis = 0.0         # 0..1 – płynne wyciąganie ręki
         self.poke = 0.0             # 0..1
-        self.hand_open = True
+        self.hand_pose = "open"
+        self.game: dict | None = None    # stan gry z hub.game (symulowany gracz reaguje na odliczanie)
+        self._game_moves: dict = {}
         self.hand_world = np.zeros(3)
+        self.last_depth: np.ndarray | None = None   # [m], inf = brak powierzchni (render(extras=True))
+        self.last_ir: np.ndarray | None = None      # obraz kamery mono z kropkami projektora
         self.poke_world = np.zeros(3)
         self._cache: dict = {}
 
@@ -177,22 +185,48 @@ class SimWorld:
             drv.heading = math.atan2(-drv.y, -drv.x)          # twarzą do robota
 
         k = min(1.0, dt * 4.0)
+        pose, bob, lateral = ph.hand, 0.0, ph.lateral
+        if pose == "game":
+            pose, bob, side = self._game_pose()
+            lateral = ph.lateral if side is None else side
         self.reach += (ph.reach - self.reach) * k
-        self.lateral += (ph.lateral - self.lateral) * k
-        self.hand_vis += ((1.0 if ph.hand else 0.0) - self.hand_vis) * min(1.0, dt * 5.0)
+        self.lateral += (lateral * self.screen_sign - self.lateral) * k
+        self.hand_vis += ((1.0 if pose else 0.0) - self.hand_vis) * min(1.0, dt * 5.0)
         self.poke += ((1.0 if ph.poke else 0.0) - self.poke) * min(1.0, dt * 3.5)
-        if ph.hand:
-            self.hand_open = ph.hand == "open"
+        if pose:
+            self.hand_pose = pose
 
         F = _u(np.array([-drv.x, -drv.y]))                     # od kierowcy do robota
         R = np.array([F[1], -F[0]])                            # jego prawa strona
         reach = 0.12 + (self.reach - 0.12) * self.hand_vis
-        z = HAND_Z - 0.35 * (1.0 - self.hand_vis) + 0.012 * math.sin(t * 2.1)
+        z = HAND_Z - 0.35 * (1.0 - self.hand_vis) + 0.012 * math.sin(t * 2.1) - bob
         xy = np.array([drv.x, drv.y]) + F * reach + R * self.lateral * self.hand_vis
         self.hand_world = np.array([xy[0], xy[1], z])
         shoulder_l = np.array([drv.x, drv.y]) - R * 0.19 + F * 0.05
         pk = shoulder_l + (POKE_TARGET - shoulder_l) * self.poke
         self.poke_world = np.array([pk[0], pk[1], HAND_Z - 0.05])
+
+    def _game_pose(self) -> tuple[str | None, float, float | None]:
+        """Symulowany gracz: pompuje pięścią w rytm odliczania, na "Teraz!" pokazuje losowy ruch,
+        po meczu ogląda powtórkę i najeżdża dłonią na przycisk "Menu" (poza, opadanie, przesunięcie w bok)."""
+        g = self.game or {}
+        ph = g.get("phase")
+        if not g.get("active") or ph == "abort":
+            return None, 0.0, None
+        if ph == "final":
+            return "open", 0.0, (0.22 if g.get("elapsed", 0.0) >= 15.5 else 0.0)
+        if ph == "countdown":
+            beat = g.get("beat_s") or 0.8
+            return "fist", 0.05 * abs(math.sin(math.pi * (g.get("elapsed", 0.0) % beat) / beat)), None
+        if ph in ("read", "reveal"):
+            n = len(g.get("history") or [])
+            if ph == "reveal" and not g.get("warmup"):
+                n -= 1                                               # runda już w historii
+            key = (bool(g.get("warmup")), g.get("round"), n)
+            if key not in self._game_moves:
+                self._game_moves[key] = self.rng.choice(("fist", "open", "scissors"))
+            return self._game_moves[key], 0.0, None
+        return "open", 0.0, None
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -200,7 +234,7 @@ class SimWorld:
             return {
                 "walkers": [(p.x, p.y, p.height, p.albedo, p.radius, p.heading) for p in self.walkers],
                 "driver": (drv.x, drv.y, drv.height, drv.albedo, drv.radius, drv.heading),
-                "hand": self.hand_world.copy(), "hand_vis": self.hand_vis, "hand_open": self.hand_open,
+                "hand": self.hand_world.copy(), "hand_vis": self.hand_vis, "hand_pose": self.hand_pose,
                 "poke": self.poke, "poke_world": self.poke_world.copy(), "phase": self.phase.name,
             }
 
@@ -302,8 +336,9 @@ class SimWorld:
             self._cache[key] = g
         return g
 
-    def render(self, W: int = 640, H: int = 360) -> tuple[np.ndarray, dict | None, list[dict]]:
-        """Zwraca (obraz IR uint8 HxW, dłoń jak z prawdziwej kamery albo None, osoby jak z detektora)."""
+    def render(self, W: int = 640, H: int = 360, extras: bool = False) -> tuple[np.ndarray, dict | None, list[dict]]:
+        """Zwraca (obraz IR uint8 HxW, dłoń jak z prawdziwej kamery albo None, osoby jak z detektora).
+        extras=True: dodatkowo self.last_depth (głębia [m]) i self.last_ir (kamera mono + kropki projektora)."""
         s = self.snapshot()
         f = (W / 2) / math.tan(math.radians(self.hfov) / 2)
         cxw, cyw, hm = self.cam
@@ -334,7 +369,7 @@ class SimWorld:
         lm3 = None
         if s["hand_vis"] > 0.02:
             toward = self.cam - s["hand"]
-            lm3 = handmodel.landmarks(s["hand"], toward, s["hand_open"], tilt=0.15)
+            lm3 = handmodel.landmarks(s["hand"], toward, s["hand_pose"], tilt=0.15)
             caps += [(*c, DRIVER) for c in handmodel.capsules(lm3)]
         poke_wrist = s["poke_world"] if s["poke"] > 0.05 else None
         if poke_wrist is not None:
@@ -393,6 +428,18 @@ class SimWorld:
         img = cv2.GaussianBlur(img, (3, 3), 0.65)
         img = img + np.random.normal(0, 0.016, img.shape).astype(np.float32)
         gray = np.clip(img * 235 + 6, 0, 255).astype(np.uint8)
+        if extras:
+            # głębia z z-bufora + szum jak w stereo (rośnie z odległością) i pojedyncze dziury
+            # (uint16 w mm, 0 = brak – dokładnie taki format daje OAK-D, ta sama ścieżka kolorowania)
+            noise = np.random.normal(0, 0.004, z.shape).astype(np.float32) * z
+            dep = np.where(valid & (z < 12.0), (z + noise) * 1000.0, 0.0)
+            dep[np.random.random(z.shape) < 0.01] = 0.0
+            self.last_depth = np.clip(dep, 0, 65535).astype(np.uint16)
+            # kamera mono: prawie tylko światło projektora -> wyraźne kropki, słabe tło hali
+            near = np.minimum(inv2, 4.0)
+            ir = alb * (0.10 + 0.20 * cosv * near) + dots * alb * 1.25 * near
+            ir = np.clip(ir, 0, 1.2) ** 0.75 * vig + np.random.normal(0, 0.02, ir.shape).astype(np.float32)
+            self.last_ir = np.clip(ir * 230 + 4, 0, 255).astype(np.uint8)
 
         # --- osoby "wykryte przez sieć": ramka + odległość (mediana głębi sylwetki) ---
         people = []
@@ -424,8 +471,10 @@ class SimWorld:
         noise = np.random.normal(0, 0.0015, (21, 2))
         lm2 = np.stack([u, v], 1) + noise
         palm = lm2[list(PALM_IDX)]
-        return {"present": True, "gesture": "FIVE" if s["hand_open"] else "FIST",
+        gesture = {"open": "FIVE", "fist": "FIST", "scissors": "PEACE", "thumb": "OK"}.get(s["hand_pose"])
+        return {"present": True, "gesture": gesture,
                 "dist_m": round(float(c[0, 2]) + float(np.random.normal(0, 0.004)), 3), "dist_src": "stereo",
                 "x_norm": round(float(palm[:, 0].mean()), 4), "y_norm": round(float(palm[:, 1].mean()), 4),
                 "landmarks": [[round(float(a), 4), round(float(b), 4)] for a, b in lm2],
+                "world": [[round(float(x), 4), round(float(y), 4), round(float(z), 4)] for x, y, z in (c - c[0])],
                 "bbox": None, "score": 0.97}

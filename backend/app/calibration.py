@@ -249,7 +249,7 @@ class Calibrator(threading.Thread):
 
         if key in ("clear", "relearn"):
             if not lidar_live:
-                self.message = "Radar nie przesyła danych – sprawdź kabel LiDAR-u."
+                self.message = "Radar nie przesyła danych. Sprawdź kabel LiDAR-u."
             left = self.countdown_end - now
             if left > 0:
                 self._publish(0.35 * (1 - left / COUNTDOWN_S),
@@ -284,11 +284,11 @@ class Calibrator(threading.Thread):
                  "ok": isinstance(p, tuple)},
             ]
             if p == "no_cam":
-                self.message = "Kamera nikogo nie widzi – stań na wprost, ok. 1 m od kamery."
+                self.message = "Kamera nikogo nie widzi. Stań na wprost, ok. 1 m od kamery."
             elif p == "many_cam":
-                self.message = "Kamera widzi kilka osób – przed robotem może stać tylko jedna."
+                self.message = "Kamera widzi kilka osób. Przed robotem może stać tylko jedna."
             elif p == "no_lidar":
-                self.message = "Radar nie widzi osoby w tej odległości – podejdź na ok. 1 m."
+                self.message = "Radar nie widzi osoby w tej odległości. Podejdź na ok. 1 m."
             else:
                 self.message = ""
 
@@ -323,7 +323,7 @@ class Calibrator(threading.Thread):
                 res = solve(self.front + self.side, g.offset_deg, g.clockwise)
                 if abs(res["corr"]) < MIN_CORR:
                     self.side.clear()
-                    self.message = "Nie udało się ustalić kierunku – przejdź jeszcze raz, wolniej."
+                    self.message = "Nie udało się ustalić kierunku. Przejdź jeszcze raz, wolniej."
                     self._publish(0.0, checks)
                     return
                 self.result = res

@@ -57,12 +57,341 @@ html, body { background: #000; color: var(--paint); font-family: var(--sans); }
 #stage[data-tone="stop"] .status h1 { color: var(--stop); }
 
 /* ---------- koła i radar ---------- */
-.hud { position: absolute; right: 64px; bottom: 176px; display: flex; align-items: flex-end; gap: 28px; }
+.hud { position: absolute; right: 56px; bottom: 176px; }
 figure { margin: 0; }
 figcaption { margin-top: 12px; font-size: 18px; color: var(--concrete); text-align: center; }
-.hud-wheels canvas { width: 300px; height: 300px; }
-.disc { width: 420px; height: 420px; border-radius: 50%; overflow: hidden; background: rgba(15, 17, 18, 0.8); box-shadow: 0 0 0 1px rgba(243, 241, 234, 0.1); }
-.disc canvas { width: 100%; height: 100%; }
+
+/* ---------- "jak widzi robot": głębia / podczerwień nad obrazem kolorowym ---------- */
+#vision { opacity: 0; transition: opacity 480ms ease; }
+.cam-box[data-shown="depth"] #vision, .cam-box[data-shown="ir"] #vision { opacity: 1; }
+#ov { transition: opacity 300ms ease; }
+.cam-box[data-shown="ir"] #ov { opacity: 0; }          /* kamera mono ma inny kadr niż kolorowa */
+
+/* trzy "zmysły" robota: w stopce z lewej (lustrzanie do kropek czujników z prawej), na każdym ekranie */
+.lenses {
+  position: absolute; left: 56px; top: 50%; transform: translateY(-50%); height: 44px; padding: 4px; gap: 2px;
+  display: flex; border-radius: 22px;
+  background: rgba(15, 17, 18, 0.62); box-shadow: inset 0 0 0 1px rgba(243, 241, 234, 0.1);
+}
+.lenses button {
+  position: relative; overflow: hidden; border: 0; border-radius: 18px; padding: 0 18px;
+  background: transparent; color: var(--concrete); font: 500 18px var(--sans); cursor: pointer;
+  transition: background-color 240ms, color 240ms;
+}
+.lenses button.on { background: rgba(243, 241, 234, 0.13); color: var(--paint); }
+.lenses button i {
+  position: absolute; left: 18px; right: 18px; bottom: 4px; height: 2px; border-radius: 1px;
+  background: var(--route); transform-origin: 0 50%; transform: scaleX(0); opacity: 0;
+  transition: transform 220ms linear;
+}
+.lenses button.on.auto i { opacity: 0.9; }
+
+/* legenda głębi pod hasłem */
+.legend { margin-top: 30px; width: 560px; }
+.legend-bar { display: block; height: 10px; border-radius: 5px; }
+.legend-ticks { position: relative; height: 24px; margin-top: 10px; font-size: 18px; color: var(--concrete); }
+.legend-ticks span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
+.legend-ticks span.far { transform: translateX(-100%); color: var(--gravel); }
+
+/* ---------- ARENA: papier, kamień, nożyce ----------
+   Z lewej odwiedzający (obraz z kamery przesuwa się w lewo), z prawej hologram dłoni robota
+   za ukośną krawędzią. Animowane tylko transform / opacity (płynnie na Raspberry Pi). */
+.cam-box .cam-inner { transform: translateX(var(--shift, 0px)); transition: transform 650ms cubic-bezier(.2, .8, .2, 1); }
+body.mirror .cam-box .cam-inner { transform: translateX(var(--shift, 0px)) scaleX(-1); }
+#stage.arena-on { --shift: -400px; }
+#freeze { opacity: 0; }
+.cam-box.frozen #freeze { opacity: 1; }
+.cam-box.frozen #ov { opacity: 0; }
+
+.status, .hud { transition: opacity 320ms ease, transform 320ms ease; }
+#stage.arena-on .status, #stage.arena-on .hud, #stage.arena-on .invite,
+#stage.inviting .hud { opacity: 0; transform: translateY(14px); pointer-events: none; }
+
+.arena {
+  position: absolute; inset: 0 0 134px 0; overflow: hidden; pointer-events: none;
+  visibility: hidden; transition: visibility 0s linear 700ms;
+}
+#stage.arena-on .arena { visibility: visible; transition-delay: 0s; }
+.arena::before {                       /* winieta nad obrazem z kamery */
+  content: ""; position: absolute; inset: 0; opacity: 0; transition: opacity 500ms ease;
+  background: radial-gradient(ellipse 52% 70% at 27% 50%, rgba(5, 6, 7, 0) 45%, rgba(5, 6, 7, 0.62) 100%);
+}
+#stage.arena-on .arena::before { opacity: 1; }
+.arena .on { opacity: 1; }
+/* napis spoza bieżącej fazy gry (game.js, tidy): całkiem wyłączony, żadna animacja go nie pokaże */
+.arena [hidden] { display: none !important; }
+
+.arena-ai-wrap {
+  position: absolute; top: 0; right: 0; width: 1020px; height: 100%;
+  transform: translateX(112%); transition: transform 620ms cubic-bezier(.2, .8, .2, 1);
+}
+#stage.arena-on .arena-ai-wrap { transform: none; }
+.arena-ai {
+  position: absolute; inset: 0; clip-path: polygon(153px 0, 100% 0, 100% 100%, 0 100%);
+  background:
+    radial-gradient(ellipse 58% 52% at 57% 47%, rgba(108, 180, 255, 0.22), rgba(108, 180, 255, 0) 72%),
+    radial-gradient(rgba(108, 180, 255, 0.17) 1.3px, transparent 1.8px) 0 0 / 30px 30px,
+    linear-gradient(180deg, #0c1014, #06080a);
+}
+.arena-ai canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.arena-divider { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+/* błysk migawki tylko nad zdjęciem odwiedzającego (lewa strona skosu) */
+.arena-flash { position: absolute; inset: 0; background: #fff; opacity: 0; clip-path: polygon(0 0, 1053px 0, 900px 100%, 0 100%); }
+.arena-fx { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+/* tablica wyników */
+.arena-side {
+  position: absolute; top: 90px; display: flex; flex-direction: column; line-height: 1;
+  opacity: 0; transform: translateY(-24px); transition: opacity 420ms ease 280ms, transform 420ms cubic-bezier(.2, .8, .2, 1) 280ms;
+}
+#stage.arena-on .arena-side { opacity: 1; transform: none; }
+.arena-side.human { left: 64px; align-items: flex-start; }
+.arena-side.robot { right: 64px; align-items: flex-end; }
+.arena-side .name { font: 600 38px var(--cond); letter-spacing: 7px; text-transform: uppercase; color: var(--paint); }
+.arena-side.robot .name { color: var(--route); }
+.arena-side .score {
+  display: inline-block; font: 600 180px/0.86 var(--cond); font-variant-numeric: tabular-nums;
+  color: var(--paint); text-shadow: 0 8px 34px rgba(0, 0, 0, 0.5);
+}
+.arena-side.robot .score { color: #dcefff; text-shadow: 0 0 44px rgba(108, 180, 255, 0.5); }
+.arena-round {
+  position: absolute; top: 96px; left: 50%; translate: -50% 0; padding: 9px 22px; border-radius: 24px;
+  font: 600 24px var(--cond); letter-spacing: 5px; color: var(--paint);
+  background: rgba(8, 9, 10, 0.7); box-shadow: inset 0 0 0 1px rgba(243, 241, 234, 0.14);
+  opacity: 0; transition: opacity 420ms ease 280ms;
+}
+#stage.arena-on .arena-round { opacity: 1; }
+#stage.replaying .arena-round, #stage.final .arena-round { opacity: 0; transition: opacity 120ms ease; }
+
+/* wejście: VS i trzy ruchy */
+.arena-vs {
+  position: absolute; left: 976px; top: 473px; translate: -50% -50%;
+  font: 600 260px/1 var(--cond); color: #fff; opacity: 0;
+  text-shadow: 0 0 60px rgba(108, 180, 255, 0.85), 0 0 6px rgba(255, 255, 255, 0.9);
+}
+.arena-moves { position: absolute; left: 0; right: 0; bottom: 40px; display: flex; flex-direction: column; align-items: center; gap: 12px; opacity: 0; }
+.arena-moves .row {
+  display: flex; gap: 40px; padding: 18px 40px 14px; border-radius: 30px;
+  background: rgba(8, 9, 10, 0.76); box-shadow: inset 0 0 0 1px rgba(243, 241, 234, 0.12);
+}
+.arena-moves figure { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.arena-moves canvas { width: 150px; height: 150px; }
+.arena-moves figcaption { font: 600 30px var(--cond); letter-spacing: 4px; text-transform: uppercase; color: var(--paint); }
+
+/* rozgrzewka: jedna linijka nad słowami odliczania */
+.arena-hint {
+  position: absolute; left: 0; right: 0; top: 176px; text-align: center; opacity: 0;
+  font: 500 36px var(--sans); color: var(--paint); text-shadow: 0 2px 16px rgba(0, 0, 0, 0.9);
+}
+
+/* odliczanie */
+.arena-word {
+  position: absolute; left: 0; right: 0; top: 300px; text-align: center;
+  font: 600 300px/1 var(--cond); letter-spacing: 8px; color: #fff; opacity: 0;
+  text-shadow: 0 0 70px rgba(108, 180, 255, 0.7), 0 10px 0 rgba(0, 0, 0, 0.28);
+}
+
+/* wynik rundy */
+.arena-res {
+  position: absolute; left: 0; right: 0; top: 172px; text-align: center;
+  font: 600 160px/1 var(--cond); letter-spacing: 5px; color: var(--paint); opacity: 0;
+  text-shadow: 0 10px 44px rgba(0, 0, 0, 0.55);
+}
+.arena-res[data-tone="human"] { color: var(--go); text-shadow: 0 0 70px rgba(63, 194, 122, 0.6), 0 10px 44px rgba(0, 0, 0, 0.5); }
+.arena-res[data-tone="robot"] { color: #93c9ff; text-shadow: 0 0 70px rgba(108, 180, 255, 0.75), 0 10px 44px rgba(0, 0, 0, 0.5); }
+.arena-res[data-tone="muted"] { font-size: 150px; }
+.arena-move { position: absolute; width: 760px; text-align: center; opacity: 0; }
+.arena-move { bottom: 86px; font: 600 132px/1 var(--cond); letter-spacing: 4px; color: var(--paint); text-shadow: 0 8px 34px rgba(0, 0, 0, 0.65); }
+.arena-move.human { left: 140px; }
+.arena-move.robot { left: 1080px; }
+.arena-move.robot { color: #dcefff; text-shadow: 0 0 44px rgba(108, 180, 255, 0.65); }
+
+/* koniec meczu */
+.arena-final {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: radial-gradient(ellipse at 50% 50%, rgba(6, 7, 8, 0.58), rgba(6, 7, 8, 0.9)); opacity: 0;
+}
+.final-title { font: 600 150px/1 var(--cond); letter-spacing: 8px; color: var(--paint); text-shadow: 0 10px 44px rgba(0, 0, 0, 0.5); }
+.arena-final[data-tone="human"] .final-title { color: var(--go); text-shadow: 0 0 80px rgba(63, 194, 122, 0.55); }
+.arena-final[data-tone="robot"] .final-title { color: #93c9ff; text-shadow: 0 0 80px rgba(108, 180, 255, 0.7); }
+.final-score { display: flex; align-items: baseline; gap: 44px; margin-top: 70px; font: 600 270px/0.86 var(--cond); font-variant-numeric: tabular-nums; }
+.final-score b { position: relative; }
+.final-score b::before {
+  position: absolute; left: 50%; top: -52px; translate: -50% 0;
+  font: 600 32px var(--cond); letter-spacing: 7px; color: var(--concrete);
+}
+#finalH::before { content: "TY"; }
+#finalR::before { content: "ROBOT"; color: var(--route); }
+#finalR { color: #dcefff; }
+.final-score span {
+  position: relative; align-self: center; width: 30px; height: 120px; font-size: 0; color: transparent;
+  translate: 0 12px;                       /* środek wysokości cyfr (nie linii tekstu) */
+}
+.final-score span::before, .final-score span::after {
+  content: ""; position: absolute; left: 0; width: 30px; height: 30px; border-radius: 50%; background: var(--gravel);
+}
+.final-score span::before { top: 0; }
+.final-score span::after { bottom: 0; }
+/* po meczu: "Zagraj jeszcze raz" / "Menu". Kamera wraca na środek, panel robota odjeżdża,
+   dłoń na wprost trafia w przerwę między przyciskami (nic się samo nie wybiera) */
+#stage.arena-on.choice { --shift: 0px; }
+#stage.choice .arena-ai-wrap { transform: translateX(112%); }
+.final-actions {
+  display: flex; gap: 200px; max-height: 0; margin-top: 0;
+  opacity: 0; transform: translateY(24px);
+  transition: opacity 360ms ease 160ms, transform 420ms cubic-bezier(.2, .8, .2, 1) 160ms,
+    max-height 420ms cubic-bezier(.2, .8, .2, 1), margin-top 420ms cubic-bezier(.2, .8, .2, 1);
+}
+#stage.choice .final-actions { max-height: 100px; margin-top: 64px; opacity: 1; transform: none; }
+.final-btn {
+  position: relative; width: 420px; height: 100px; overflow: hidden; border: 0; border-radius: 50px;
+  display: flex; align-items: center; justify-content: center; gap: 14px; cursor: pointer; pointer-events: none;
+  background: rgba(10, 12, 14, 0.82); box-shadow: inset 0 0 0 2px rgba(243, 241, 234, 0.2);
+  color: var(--paint); font: 600 38px var(--cond); letter-spacing: 4px; text-transform: uppercase; white-space: nowrap;
+  transition: transform 260ms cubic-bezier(.2, .8, .2, 1), box-shadow 200ms ease, background-color 200ms ease;
+}
+#stage.choice .final-btn { pointer-events: auto; }
+.final-btn svg { width: 34px; height: 34px; flex: none; }
+.final-btn.again { box-shadow: inset 0 0 0 2px rgba(108, 180, 255, 0.55); }
+.final-btn[data-hover] { transform: scale(1.06); background: rgba(12, 18, 26, 0.9); box-shadow: inset 0 0 0 3px var(--route), 0 0 60px rgba(108, 180, 255, 0.3); }
+.final-btn.chosen { transform: scale(1.1); box-shadow: inset 0 0 0 4px var(--paint), 0 0 90px rgba(108, 180, 255, 0.45); }
+.final-btn i { position: absolute; left: 0; bottom: 0; width: 100%; height: 6px; background: var(--route); transform-origin: 0 50%; transform: scaleX(0); }
+
+/* powtórka */
+.replay-badge {
+  position: absolute; left: 50%; top: 96px; translate: -50% 0; display: flex; align-items: center; gap: 12px;
+  padding: 10px 24px; border-radius: 26px; background: rgba(8, 9, 10, 0.8); box-shadow: inset 0 0 0 1px rgba(243, 241, 234, 0.16);
+  font: 600 26px var(--cond); letter-spacing: 5px; color: var(--paint); opacity: 0;
+}
+.replay-badge i { width: 14px; height: 14px; border-radius: 50%; background: var(--stop); animation: pulse 1s ease-in-out infinite; }
+.replay-cap {
+  position: absolute; left: 50%; top: 168px; translate: -50% 0; width: 1240px; text-align: center;
+  font: 500 34px/1.3 var(--sans); color: var(--paint); text-shadow: 0 2px 16px rgba(0, 0, 0, 0.9); opacity: 0;
+}
+
+/* zaproszenie do gry (scena, gdy nikt nie steruje) */
+.invite {
+  position: absolute; right: 64px; bottom: 176px; margin: 0; width: 440px;
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
+  opacity: 0; transform: translateY(14px); transition: opacity 420ms ease, transform 420ms ease; pointer-events: none;
+}
+#stage.inviting .invite { opacity: 1; transform: none; }
+.invite canvas {
+  width: 420px; height: 420px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(108, 180, 255, 0.18), rgba(9, 11, 14, 0.88) 70%);
+  box-shadow: inset 0 0 0 1px rgba(108, 180, 255, 0.28), 0 0 80px rgba(108, 180, 255, 0.12);
+}
+.invite figcaption { font: 600 36px var(--cond); letter-spacing: 4px; text-transform: uppercase; color: var(--paint); }
+
+/* ---------- EKRAN STARTOWY: wybór gry ---------- */
+.menu {
+  position: absolute; inset: 0 0 134px 0; display: flex; flex-direction: column; align-items: center; padding-top: 126px;
+  opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 420ms ease, visibility 0s linear 420ms;
+}
+#stage.menu-on .menu { opacity: 1; visibility: visible; transition-delay: 0s; }
+.menu-cards { display: flex; gap: 120px; margin-top: 40px; }
+.menu-card {
+  position: relative; width: 600px; height: 470px; padding: 0 40px 46px; border: 0; border-radius: 28px; overflow: hidden;
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 12px;
+  background: rgba(10, 12, 14, 0.74); box-shadow: inset 0 0 0 1px rgba(243, 241, 234, 0.14);
+  color: var(--paint); font-family: var(--sans); cursor: pointer; pointer-events: auto;
+  transition: transform 280ms cubic-bezier(.2, .8, .2, 1), box-shadow 220ms ease, background-color 220ms ease;
+}
+.menu-card b { font: 600 62px/1 var(--cond); letter-spacing: 1px; white-space: nowrap; }
+.menu-card span { font: 500 22px var(--sans); color: var(--concrete); }
+.menu-card[data-hover] {
+  transform: scale(1.04); background: rgba(12, 18, 26, 0.82);
+  box-shadow: inset 0 0 0 3px var(--route), 0 0 70px rgba(108, 180, 255, 0.28);
+}
+.menu-card.chosen { transform: scale(1.08); box-shadow: inset 0 0 0 4px var(--paint), 0 0 100px rgba(108, 180, 255, 0.45); }
+.menu-bar { position: absolute; left: 0; bottom: 0; width: 100%; height: 7px; background: var(--route); transform-origin: 0 50%; transform: scaleX(0); }
+.menu-foot { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.menu-hint { margin: 0; font: 500 30px var(--sans); color: var(--paint); text-shadow: 0 2px 14px rgba(0, 0, 0, 0.85); }
+.menu-fx { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+
+/* podglądy "nagrane" w kartach: miniatura areny (z lewej gracz, z prawej robot) */
+.menu-card { height: 500px; }
+.demo {
+  position: absolute; left: 40px; right: 40px; top: 30px; height: 290px; border-radius: 18px; overflow: hidden;
+  background: radial-gradient(ellipse 70% 80% at 28% 50%, #1a1d20, #0d0f11);
+  box-shadow: inset 0 0 0 1px rgba(243, 241, 234, 0.1);
+}
+.demo-human { position: absolute; left: 0; top: 0; width: 55%; height: 100%; }
+.demo-ai {
+  position: absolute; right: 0; top: 0; width: 55%; height: 100%; clip-path: polygon(22% 0, 100% 0, 100% 100%, 0 100%);
+  background:
+    radial-gradient(ellipse 60% 60% at 60% 50%, rgba(108, 180, 255, 0.2), rgba(108, 180, 255, 0) 72%),
+    radial-gradient(rgba(108, 180, 255, 0.16) 1px, transparent 1.4px) 0 0 / 18px 18px,
+    linear-gradient(180deg, #0c1014, #06080a);
+}
+.demo-ai canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.demo-div { position: absolute; inset: 0; width: 100%; height: 100%; }
+.demo-tag, .demo-score {
+  position: absolute; top: 12px; display: flex; align-items: center; gap: 7px; padding: 4px 11px; border-radius: 13px;
+  font: 600 16px var(--cond); letter-spacing: 3px; color: var(--paint); background: rgba(8, 9, 10, 0.72);
+}
+.demo-tag { left: 12px; }
+.demo-tag i { width: 8px; height: 8px; border-radius: 50%; background: var(--stop); animation: pulse 1s ease-in-out infinite; }
+.demo-score { right: 12px; letter-spacing: 2px; font-variant-numeric: tabular-nums; }
+.demo-word {
+  position: absolute; left: 0; right: 0; bottom: 12px; text-align: center;
+  font: 600 50px/1 var(--cond); letter-spacing: 3px; color: #fff; opacity: 0;
+  text-shadow: 0 0 26px rgba(108, 180, 255, 0.75), 0 4px 0 rgba(0, 0, 0, 0.3);
+}
+.demo-res {
+  position: absolute; left: 0; right: 0; bottom: 14px; text-align: center;
+  font: 600 42px/1 var(--cond); letter-spacing: 3px; color: var(--paint); opacity: 0; text-shadow: 0 4px 18px rgba(0, 0, 0, 0.7);
+}
+.demo-res[data-tone="human"] { color: var(--go); }
+.demo-res[data-tone="robot"] { color: #93c9ff; }
+.demo-cap {
+  position: absolute; left: 23%; bottom: 12px; transform: translateX(-50%);   /* środek pola dłoni na dole */ padding: 5px 12px; border-radius: 13px;
+  font: 600 18px var(--sans); color: var(--paint); background: rgba(8, 9, 10, 0.72);
+  white-space: nowrap; max-width: 190px; overflow: hidden;      /* zawsze po lewej stronie skosu */
+}
+.demo-gauge {
+  position: absolute; left: 73%; bottom: 14px; transform: translateX(-50%);   /* środek pola robota na dole */ display: flex; align-items: center; gap: 8px;
+  font: 600 15px var(--cond); letter-spacing: 3px; color: var(--concrete);
+}
+.demo-gauge em { font-style: normal; }
+.demo-gauge i { display: block; width: 110px; height: 8px; border-radius: 4px; background: rgba(243, 241, 234, 0.12); overflow: hidden; }
+.demo-gauge b { display: block; height: 100%; width: 100%; border-radius: 4px; background: var(--go); transform-origin: 0 50%; transform: scaleX(0); }
+
+/* w menu: bez kół i radaru; hasło tylko jako podpis sceny "Głębia" / "Podczerwień" */
+#stage.menu-on .hud, #stage.menu-on .invite { opacity: 0; transform: translateY(14px); pointer-events: none; }
+#stage.menu-on .status { opacity: 0; }
+/* podpis widoku "Głębia" / "Podczerwień" w menu: jedna krótka linijka pod podpowiedzią */
+.menu-scene {
+  display: flex; align-items: center; gap: 14px; margin: 14px 0 0;
+  font: 500 22px var(--sans); color: var(--concrete); text-shadow: 0 2px 12px rgba(0, 0, 0, 0.85);
+}
+.menu-legend { display: block; width: 170px; height: 6px; border-radius: 3px; }
+
+/* ---------- jazda: panel LiDAR-u ---------- */
+.radar-panel {
+  width: 500px; padding: 16px 18px 14px; border-radius: 22px;
+  background: rgba(10, 12, 14, 0.8); box-shadow: inset 0 0 0 1px rgba(243, 241, 234, 0.12);
+}
+.rp-head { display: flex; align-items: center; justify-content: center; }
+.rp-head b { font: 600 26px var(--cond); letter-spacing: 1px; }
+#radarPro { display: block; width: 464px; height: 410px; margin-top: 6px; }
+.rp-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 6px; padding-top: 10px; border-top: 1px solid rgba(243, 241, 234, 0.1); }
+.rp-stats div { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; }
+.rp-stats span { font: 500 14px var(--sans); color: var(--concrete); }
+.rp-stats b { font: 600 32px/1 var(--cond); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* ---------- przycisk powrotu do ekranu startowego ---------- */
+.back-btn {
+  position: absolute; left: 0; top: -2px; height: 48px; padding: 0 22px 0 14px; overflow: hidden;
+  display: flex; align-items: center; gap: 8px; border: 0; border-radius: 24px; cursor: pointer;
+  background: rgba(15, 17, 18, 0.74); box-shadow: inset 0 0 0 1px rgba(243, 241, 234, 0.18);
+  color: var(--paint); font: 600 23px var(--cond); letter-spacing: 3px; text-transform: uppercase;
+  transition: transform 220ms cubic-bezier(.2, .8, .2, 1), box-shadow 200ms ease;
+}
+.back-btn svg { width: 24px; height: 24px; }
+.back-btn[data-hover] { transform: scale(1.1); box-shadow: inset 0 0 0 2px var(--route), 0 0 44px rgba(108, 180, 255, 0.35); }
+.back-btn i { position: absolute; left: 0; bottom: 0; width: 100%; height: 4px; background: var(--route); transform-origin: 0 50%; transform: scaleX(0); }
+.cursor-fx { position: absolute; left: 0; top: 0; width: 1920px; height: 946px; pointer-events: none; }
 
 /* ---------- stopka (identyczna jak na drugim monitorze stoiska) ---------- */
 .credits {
@@ -79,6 +408,14 @@ figcaption { margin-top: 12px; font-size: 18px; color: var(--concrete); text-ali
 .diag i { width: 7px; height: 7px; border-radius: 50%; background: var(--gravel); }
 .diag i.real { background: var(--go); }
 .diag i.sim { background: var(--caution); }
+.diag .warn { padding: 3px 10px; border-radius: 12px; font-weight: 600; }
+.diag .warn.low { color: var(--caution); background: rgba(242, 179, 61, 0.14); }
+.diag .warn.critical { color: #fff; background: var(--stop); }
+.diag i.warm { background: var(--caution); }
+.diag i.hot { background: var(--stop); }
+.diag .temp { font-variant-numeric: tabular-nums; color: var(--concrete); }
+.diag .temp.warm { color: var(--caution); }
+.diag .temp.hot { color: #fff; font-weight: 600; }
 
 /* ---------- ukryta kalibracja radaru (5x logo Koła + hasło) ---------- */
 [hidden] { display: none !important; }

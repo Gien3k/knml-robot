@@ -96,3 +96,70 @@ def test_reset_relearns():
     learn(sh)
     sh.reset()
     assert not sh.ready
+
+
+# --------------------------------------------------------------------------- stoisko żyje
+def learned(**kw):
+    from app.logic.shield import Shield
+    sh = Shield(learn_s=0.3, **kw)
+    t = 0.0
+    for _ in range(5):
+        sh.update(np.full(360, 2.0), t)
+        t += 0.1
+    assert sh.ready
+    return sh, t
+
+
+def test_static_object_on_table_is_absorbed_and_forgotten():
+    sh, t = learned(absorb_s=3.0, forget_s=1.0)
+    cup = np.full(360, 2.0)
+    cup[40:46] = 0.22                                    # kubek postawiony tuż przy robocie
+    for _ in range(10):
+        st = sh.update(cup, t); t += 0.1
+    assert st.active                                     # najpierw: stop (może to ręka)
+    for _ in range(40):
+        st = sh.update(cup, t, absorb_ok=True); t += 0.1
+    assert not st.active                                 # leży bez ruchu -> część tła, jazda wolna
+    hand = cup.copy(); hand[100:106] = 0.2
+    for _ in range(3):
+        st = sh.update(hand, t); t += 0.1
+    assert st.active                                     # prawdziwa ręka nadal zatrzymuje
+    for _ in range(12):
+        st = sh.update(np.full(360, 2.0), t); t += 0.1  # kubek zabrany -> tło wraca
+    assert not st.active
+    for _ in range(3):
+        st = sh.update(cup, t); t += 0.1
+    assert st.active                                     # postawiony znowu -> znowu wykryty
+
+
+def test_no_absorb_while_wheels_move():
+    sh, t = learned(absorb_s=1.0)
+    cup = np.full(360, 2.0); cup[40:46] = 0.22
+    for _ in range(40):
+        st = sh.update(cup, t, absorb_ok=False); t += 0.1
+    assert st.active                                     # koła się kręcą: nic nie znika z tarczy
+
+
+def test_moved_robot_relearns_background():
+    sh, t = learned()
+    room = np.full(360, 2.0)
+    room[0:90] = 1.0; room[180:270] = 3.0                # stoisko: bliżej z przodu, dalej z tyłu
+    sh.reset()
+    for _ in range(5):
+        sh.update(room, t); t += 0.1
+    assert sh.ready
+    rotated = np.roll(room, 45)                          # ktoś obrócił robota o 45°
+    moved = False
+    for _ in range(12):
+        st = sh.update(rotated, t); t += 0.1
+        moved |= st.moved
+    assert moved                                         # wykryte -> nauka tła od nowa (koła stoją)
+    assert sh.ready and st.fg_bins == []                 # nowe tło = obrócone stoisko, nic "obcego"
+    people = room.copy(); people[100:140] = 0.9           # tłum przed robotem to NIE przesunięcie
+    sh2, t2 = learned()
+    sh2.reset()
+    for _ in range(5):
+        sh2.update(room, t2); t2 += 0.1
+    for _ in range(20):
+        st = sh2.update(people, t2); t2 += 0.1
+        assert not st.moved

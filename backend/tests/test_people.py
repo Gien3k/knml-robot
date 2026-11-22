@@ -136,6 +136,7 @@ def test_brake_reaction_time_in_simulation():
 def test_brake_waits_for_real_esp32_confirmation():
     hub, t = learned_hub()
     hub.set_device("esp32", "real")
+    hub.on_wheels(0.3, 0.3, "esp32", t)                  # koła się kręcą
     hub.on_scan(poke(t), t, "sim")
     hub.on_scan(poke(t + 0.1), t + 0.1, "sim")
     assert hub.brake["last_s"] is None                   # czekamy, aż ESP32 wyśle stop
@@ -148,6 +149,7 @@ def test_brake_waits_for_real_esp32_confirmation():
 def test_brake_record_keeps_best():
     hub, t = learned_hub()
     for gap in (0.2, 0.1, 0.3):                           # odstęp między 1. a 2. skanem z ręką
+        hub.on_wheels(0.3, 0.3, "sim", t)                 # koła się kręcą
         hub.on_scan(poke(t), t, "sim")
         t += gap
         hub.on_scan(poke(t), t, "sim")
@@ -158,3 +160,13 @@ def test_brake_record_keeps_best():
         t += 0.1
     assert hub.brake["count"] == 3
     assert hub.brake["record_s"] == pytest.approx(0.1, abs=1e-6)
+
+
+def test_no_brake_show_when_wheels_stand_still():
+    """Ktoś sięga po coś obok stojącego robota: stop dla kół tak, ale bez "Stop w 0,1 s" na ekranie."""
+    hub, t = learned_hub()
+    hub.estop_event.clear()
+    hub.on_scan(poke(t), t, "sim")
+    hub.on_scan(poke(t + 0.1), t + 0.1, "sim")
+    assert hub.shield_state.active and hub.estop_event.is_set()
+    assert hub.brake["last_s"] is None and hub.brake["count"] == 0

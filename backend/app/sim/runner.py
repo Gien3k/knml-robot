@@ -10,6 +10,7 @@ import cv2
 
 from ..config import Settings
 from ..hub import Hub
+from ..logic.vision import colorize_depth, ir_view
 from .world import SimWorld
 
 log = logging.getLogger("sim")
@@ -21,7 +22,7 @@ class SimRunner(threading.Thread):
         self.hub, self.s = hub, settings
         self._halt = threading.Event()
         self.world = SimWorld(settings.cam_offset_x, settings.cam_offset_y,
-                              settings.sim_camera_height_m, settings.oak_hfov_deg)
+                              settings.sim_camera_height_m, settings.oak_hfov_deg, mirror=settings.oak_mirror)
 
     def stop(self) -> None:
         self._halt.set()
@@ -45,16 +46,26 @@ class SimRunner(threading.Thread):
             now = time.monotonic()
             dt = min(0.1, now - last)
             last = now
+            world.game = hub.game
+            world.screen_sign = 1.0 if hub.mirror else -1.0          # symulowany gracz celuje w tę samą kartę
             world.tick(now)
 
             if now >= next_cam:
-                img, hand, people = world.render(W, H)
+                lens = hub.lens.get("lens") if s.vision_enable else "color"
+                extras = lens in ("depth", "ir")
+                img, hand, people = world.render(W, H, extras=extras)
                 ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, s.jpeg_quality])
                 if ok and not self._halt.is_set():
                     hub.on_frame(buf.tobytes(), W, H)
                     t = time.monotonic()
                     hub.on_hand(hand, t, "sim")
                     hub.on_people(people, t, "sim")
+                if extras and not self._halt.is_set():
+                    vis = (colorize_depth(world.last_depth, out_w=s.vision_width) if lens == "depth"
+                           else ir_view(world.last_ir, out_w=s.vision_width))
+                    ok, vbuf = cv2.imencode(".jpg", vis, [cv2.IMWRITE_JPEG_QUALITY, max(80, s.jpeg_quality)])
+                    if ok:
+                        hub.on_vision(vbuf.tobytes(), lens, vis.shape[1], vis.shape[0])
                 next_cam += cam_period
                 if next_cam < now:
                     next_cam = now + cam_period

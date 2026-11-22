@@ -32,23 +32,44 @@ def test_ramp_function():
     assert ramp(0.0, -0.5, 1.0, 2.0, 0.1) == pytest.approx(-0.1)
 
 
-def test_ramp_up_takes_ramp_up_time():
+def test_soft_start_protects_motors():
     lg, p = logic()
-    # dłoń przy samym końcu strefy blisko = pełny gaz
+    # dłoń przy samym końcu strefy blisko = pełny gaz, ale silniki ruszają spokojnie
     t, out = run(lg, 0.3, dist=p.hand_near_m)
     assert out.state == DRIVE
-    assert 0.0 < out.cmd_l < p.max_speed * 0.6
-    t, out = run(lg, 0.4, t0=t, dist=p.hand_near_m)
-    assert out.cmd_l == pytest.approx(p.max_speed, abs=1e-6)          # 0 -> max w ~0,6 s
+    assert 0.0 < out.cmd_l < p.max_speed * 0.25
+    prev, jumps = out.cmd_l, []
+    for _ in range(50):
+        t, out = run(lg, DT, t0=t, dist=p.hand_near_m)
+        jumps.append(out.cmd_l - prev)
+        prev = out.cmd_l
+    assert max(jumps) <= p.max_speed / p.ramp_up_s * DT + 1e-9          # nigdy szybciej niż rampa
+    assert out.cmd_l == pytest.approx(p.max_speed, abs=1e-6)            # po ~2 s pełna prędkość
 
 
-def test_brake_twice_as_fast_and_coast_when_hand_lost():
+def test_gentle_stop_when_hand_lost():
     lg, p = logic()
-    t, out = run(lg, 1.0, dist=p.hand_near_m)
+    t, out = run(lg, 2.5, dist=p.hand_near_m)
     assert out.cmd_l == pytest.approx(p.max_speed)
     t, out = run(lg, 0.30, t0=t, hand_ok=False)                        # dłoń znika
-    assert out.cmd_l == pytest.approx(0.0, abs=1e-9)                   # 2x szybciej niż 0,6 s
-    assert out.state == IDLE
+    assert out.cmd_l > 0.3 * p.max_speed                               # bez gwałtownego hamowania
+    t, out = run(lg, 1.0, t0=t, hand_ok=False)
+    assert out.cmd_l == 0.0 and out.state == IDLE
+
+
+def test_reverse_waits_at_zero_before_changing_direction():
+    lg, p = logic()
+    t, out = run(lg, 2.0, dist=p.hand_near_m)
+    assert out.cmd_l > 0.4
+    zero_t = None
+    for _ in range(80):
+        t, out = run(lg, DT, t0=t, gesture="FIST", dist=p.hand_near_m)
+        if out.cmd_l == 0.0 and zero_t is None:
+            zero_t = t
+        if out.cmd_l < 0:
+            break
+    assert zero_t is not None and out.cmd_l < 0
+    assert t - zero_t >= p.reverse_pause_s - 1e-6                      # postój przed jazdą do tyłu
 
 
 def test_watchdog_stale_perception():
@@ -65,7 +86,7 @@ def test_watchdog_stale_perception():
 
 def test_estop_has_absolute_priority_and_no_ramp():
     lg, p = logic()
-    t, out = run(lg, 1.0, dist=p.hand_near_m)
+    t, out = run(lg, 2.5, dist=p.hand_near_m)
     assert out.cmd_l == pytest.approx(p.max_speed)
     t += DT
     out = lg.step(DriveInputs(now=t, hand=hand(t, dist=p.hand_near_m), shield_active=True))
@@ -77,7 +98,7 @@ def test_estop_has_absolute_priority_and_no_ramp():
     assert not out.estop_edge
     # po zwolnieniu tarczy rusza od zera rampą
     t, out = run(lg, 0.1, t0=t)
-    assert 0.0 < out.cmd_l < 0.2
+    assert 0.0 <= out.cmd_l < 0.05
 
 
 def test_throttle_grows_when_hand_gets_closer():

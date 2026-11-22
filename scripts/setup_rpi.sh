@@ -9,6 +9,8 @@
 #   1. reguła udev dla OAK-D (Luxonis 03e7) + uprawnienia do portów szeregowych,
 #   2. config.txt: usb_max_current_enable=1 (prąd USB dla OAK-D Pro z projektorem IR)
 #      oraz dtparam=uart0=on (UART na GPIO 14/15 -> /dev/ttyAMA0 dla ESP32 RaspRover),
+#      oraz opcjonalnie arm_freq (PI_ARM_FREQ=1800 itd.; domyślnie 0 = bez zmian. Na łaziku 1,8 GHz
+#      nie obniżyło temperatury, więc zostaje pełne 2,4 GHz),
 #   3. wyłącza konsolę szeregową na UART (inaczej logowanie "gada" z ESP32),
 #   4. wyłącza ModemManager i brltty, które przejmują / "sondują" nowe porty USB-UART,
 #   5. wyłącza wygaszanie ekranu,
@@ -73,6 +75,25 @@ ensure_line() {
 }
 ensure_line "usb_max_current_enable=1"
 ensure_line "dtparam=uart0=on"
+
+# procesor: najwyżej PI_ARM_FREQ MHz (domyślnie bez zmian). Sprawdzone 2026-11-22: 1,8 GHz nie obniżyło temperatury
+# (76–78°C wobec 71–74°C przy 2,4 GHz), a kiosk miał mniejszy zapas. Działa od razu (sysfs) i po restarcie (config.txt).
+ARM_FREQ="${PI_ARM_FREQ:-0}"
+if [ "$ARM_FREQ" != "0" ]; then
+  if grep -Eq "^[[:space:]]*arm_freq=${ARM_FREQ}[[:space:]]*$" "$CONFIG"; then
+    ok "arm_freq=$ARM_FREQ"
+  elif grep -Eq "^[[:space:]]*arm_freq=" "$CONFIG"; then
+    sed -i -E "s/^[[:space:]]*arm_freq=.*/arm_freq=${ARM_FREQ}/" "$CONFIG"
+    done_ "arm_freq=$ARM_FREQ"
+  else
+    printf '\n[all]\n# KN ML łazik (scripts/setup_rpi.sh): procesor najwyżej %s MHz\narm_freq=%s\n' "$ARM_FREQ" "$ARM_FREQ" >> "$CONFIG"
+    done_ "arm_freq=$ARM_FREQ"
+  fi
+  for f in /sys/devices/system/cpu/cpufreq/policy*/scaling_max_freq; do
+    [ -w "$f" ] && echo $((ARM_FREQ * 1000)) > "$f"
+  done
+  ok "procesor teraz: najwyżej ${ARM_FREQ} MHz"
+fi
 
 # ---------------------------------------------------------------- 3. konsola szeregowa
 say "Konsola szeregowa na UART"

@@ -72,9 +72,40 @@ class Settings:
     attract_speed: float = field(default_factory=lambda: _float("ATTRACT_SPEED", 0.3))  # ułamek MAX_SPEED
     perception_timeout_s: float = field(default_factory=lambda: _float("PERCEPTION_TIMEOUT_S", 0.30))
 
+    # --- ekran startowy: odwiedzający wybiera grę (dłonią nad kartą / dotykiem) ---
+    menu: bool = field(default_factory=lambda: _bool("MENU", True))       # 0 = bez menu: jazda i gra naraz
+    # dłoń dalej niż tyle od kamery nie steruje (przechodnie za graczem nie przejmą gry ani menu)
+    player_max_dist_m: float = field(default_factory=lambda: _float("PLAYER_MAX_DIST_M", 1.7))
+    # akumulatory 3S: ostrzeżenie dla obsługi / koła stają (chroni zasilanie Raspberry)
+    battery_low_v: float = field(default_factory=lambda: _float("BATTERY_LOW_V", 10.8))
+    battery_critical_v: float = field(default_factory=lambda: _float("BATTERY_CRITICAL_V", 10.2))
+    drive_idle_s: float = field(default_factory=lambda: _float("DRIVE_IDLE_S", 8.0))  # jazda bez dłoni -> menu
+
+    # --- gra: papier, kamień, nożyce (start: kciuk w górę) ---
+    rps_enable: bool = field(default_factory=lambda: _bool("RPS", True))
+    # gra do RPS_WINS wygranych (3 = best of 5; remisy się nie liczą); RPS_ROUNDS = limit rund na wypadek remisów.
+    # RPS_WINS=0: stała liczba rund RPS_ROUNDS (jak dawniej)
+    rps_wins: int = field(default_factory=lambda: max(0, int(_float("RPS_WINS", 3))))
+    rps_rounds: int = field(default_factory=lambda: max(1, int(_float("RPS_ROUNDS", 9))))
+    rps_cheat_last: bool = field(default_factory=lambda: _bool("RPS_CHEAT_LAST", True))
+    rps_warmup: bool = field(default_factory=lambda: _bool("RPS_WARMUP", True))      # runda próbna bez punktów
+    rps_wheels: bool = field(default_factory=lambda: _bool("RPS_WHEELS", False))   # 1 = koła pompują i tańczą
+    rps_wheel_speed: float = field(default_factory=lambda: _float("RPS_WHEEL_SPEED", 0.15))   # m/s
+    oled: bool = field(default_factory=lambda: _bool("OLED", True))       # gra na ekraniku łazika
+
+    # --- "jak widzi robot": głębia i podczerwień, gdy nikt nie steruje ---
+    vision_enable: bool = field(default_factory=lambda: _bool("VISION", True))
+    vision_scenes: str = field(default_factory=lambda: _str("VISION_SCENES", "drive:10,depth:12"))
+    vision_width: int = field(default_factory=lambda: int(_float("VISION_WIDTH", 960)))
+
     # --- napęd ---
     max_speed: float = field(default_factory=lambda: _float("MAX_SPEED", 0.5))          # m/s, {"T":1}
-    ramp_up_s: float = field(default_factory=lambda: _float("RAMP_UP_S", 0.6))           # 0 -> max
+    # łagodny napęd (ochrona silników): miękki start, spokojne hamowanie, postój przed zmianą kierunku
+    ramp_up_s: float = field(default_factory=lambda: _float("RAMP_UP_S", 1.6))           # 0 -> max
+    ramp_down_s: float = field(default_factory=lambda: _float("RAMP_DOWN_S", 0.8))       # max -> 0
+    stop_fast_s: float = field(default_factory=lambda: _float("STOP_FAST_S", 0.3))       # kamera zgubiona
+    smooth_s: float = field(default_factory=lambda: _float("SMOOTH_S", 0.2))
+    reverse_pause_s: float = field(default_factory=lambda: _float("REVERSE_PAUSE_S", 0.3))
     drive_without_lidar: bool = field(default_factory=lambda: _bool("DRIVE_WITHOUT_LIDAR", False))
 
     # --- tarcza LiDAR ---
@@ -83,6 +114,9 @@ class Settings:
     shield_hysteresis_m: float = field(default_factory=lambda: _float("SHIELD_HYSTERESIS_M", 0.10))
     shield_release_s: float = field(default_factory=lambda: _float("SHIELD_RELEASE_S", 0.5))
     shield_learn_s: float = field(default_factory=lambda: _float("SHIELD_LEARN_S", 5.0))
+    # przedmiot leżący nieruchomo przy robocie tyle sekund (koła stoją) -> część tła; 0 = wyłączone
+    shield_absorb_s: float = field(default_factory=lambda: _float("SHIELD_ABSORB_S", 45.0))
+    shield_forget_s: float = field(default_factory=lambda: _float("SHIELD_FORGET_S", 5.0))
     lidar_stale_s: float = field(default_factory=lambda: _float("LIDAR_STALE_S", 0.5))
 
     # --- LiDAR D500 (LD19 / STL-19P) ---
@@ -111,13 +145,24 @@ class Settings:
 
     # --- OAK-D Pro ---
     oak_ir_dot: float = field(default_factory=lambda: _float("OAK_IR_DOT", 0.3))         # 0..1
+    # projektor kropek IR: domyślnie tylko przy widoku "Głębia" (mniej ciepła kamery); 1 = świeci stale
+    oak_ir_always: bool = field(default_factory=lambda: _bool("OAK_IR_ALWAYS", False))
+    # projektor przy widoku "podczerwień" (-1 = jak OAK_IR_DOT); więcej = wyraźniejsze kropki, większy pobór
+    oak_ir_view_dot: float = field(default_factory=lambda: _float("OAK_IR_VIEW_DOT", -1.0))
+    # co która klatka głębi / podczerwieni idzie do przeglądarki (oszczędza łącze USB 2)
+    oak_vision_every_n: int = field(default_factory=lambda: max(1, int(_float("OAK_VISION_EVERY_N", 3))))
     oak_mirror: bool = field(default_factory=lambda: _bool("OAK_MIRROR", True))
     oak_hfov_deg: float = field(default_factory=lambda: _float("OAK_HFOV_DEG", 69.0))
     oak_lm_model: str = field(default_factory=lambda: _str("OAK_LM_MODEL", "lite"))
-    oak_internal_fps: float = field(default_factory=lambda: _float("OAK_INTERNAL_FPS", 0.0))  # 0 = auto
-    oak_stream_fps: float = field(default_factory=lambda: _float("OAK_STREAM_FPS", 15.0))
+    # punkty dłoni 3D w metrach: gest liczony z kątów w stawach (dokładniej przy obróconej dłoni)
+    oak_world_landmarks: bool = field(default_factory=lambda: _bool("OAK_WORLD_LANDMARKS", True))
+    # czujnik i głębia w kamerze: 22 klatki/s (śledzenie dłoni i tak bierze najwyżej ~22, nadwyżka tylko grzeje
+    # kamerę); 0 = automat trackera (29)
+    oak_internal_fps: float = field(default_factory=lambda: _float("OAK_INTERNAL_FPS", 22.0))
+    # obraz na ekran: każda klatka z kamery (~20/s) w natywnych 960 px (wcześniej 15/s i 640 px przez brak chłodzenia)
+    oak_stream_fps: float = field(default_factory=lambda: _float("OAK_STREAM_FPS", 25.0))
     oak_no_frame_s: float = field(default_factory=lambda: _float("OAK_NO_FRAME_S", 3.0))
-    oak_boot_timeout_s: float = field(default_factory=lambda: _float("OAK_BOOT_TIMEOUT_S", 25.0))
+    oak_boot_timeout_s: float = field(default_factory=lambda: _float("OAK_BOOT_TIMEOUT_S", 40.0))
     oak_force_fallback: bool = field(default_factory=lambda: _bool("OAK_FORCE_FALLBACK", False))
     # detekcja osób na VPU obok śledzenia dłoni (wyłącza się sama, jeśli kamera nie da rady)
     oak_person_detect: bool = field(default_factory=lambda: _bool("OAK_PERSON_DETECT", True))
@@ -137,8 +182,8 @@ class Settings:
     sim_camera_height_m: float = field(default_factory=lambda: _float("SIM_CAMERA_HEIGHT_M", 0.95))
 
     # --- obraz w przeglądarce ---
-    jpeg_quality: int = field(default_factory=lambda: int(_float("JPEG_QUALITY", 78)))
-    stream_width: int = field(default_factory=lambda: int(_float("STREAM_WIDTH", 640)))
+    jpeg_quality: int = field(default_factory=lambda: int(_float("JPEG_QUALITY", 80)))
+    stream_width: int = field(default_factory=lambda: int(_float("STREAM_WIDTH", 960)))
 
 
 settings = Settings()

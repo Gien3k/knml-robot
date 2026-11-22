@@ -110,14 +110,20 @@ while True:
         detection = node.io['from_post_pd_nn'].get().getLayerFp16("result")
         ${_TRACE2} (f"Manager received pd result (len={len(detection)}) : "+str(detection))
         # detection is list of 2x8 float
-        # Currently we keep only the 8 first values as we are in solo mode
-        pd_score, box_x, box_y, box_size, kp0_x, kp0_y, kp2_x, kp2_y = detection[:8]
-        
-        if pd_score < ${_pd_score_thresh} or box_size < 0:
+        # KNML: of the (up to) 2 palms above the score threshold, keep the BIGGEST one = the hand closest
+        # to the camera (a hand resting lower / further away does not take control). Then solo tracking
+        # keeps following that hand until it is lost.
+        best = None
+        for k in range(len(detection) // 8):
+            d = detection[8 * k:8 * k + 8]
+            if d[0] >= ${_pd_score_thresh} and d[3] > 0 and (best is None or d[3] > best[3]):
+                best = d
+        if best is None:
             send_result_no_hand(True, 0)
             send_new_frame_to_branch = 1
             ${_TRACE1} (f"Palm detection - no hand detected")
             continue
+        pd_score, box_x, box_y, box_size, kp0_x, kp0_y, kp2_x, kp2_y = best
         ${_TRACE1} (f"Palm detection - hand detected")
 
         # scale_center_x = sqn_scale_x - sqn_rr_center_x

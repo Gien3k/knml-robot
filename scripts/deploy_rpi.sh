@@ -74,7 +74,10 @@ done
 cd ~/knml-robot
 printf 'kontener: '; docker inspect -f '{{.State.Status}} / {{.State.Health.Status}} / restart={{.HostConfig.RestartPolicy.Name}}' knml-robot 2>/dev/null || echo "BRAK"
 printf 'serwer:   '; curl -sf http://localhost:8000/api/health >/dev/null && echo "odpowiada" || echo "NIE ODPOWIADA"
-printf 'kiosk:    '; pgrep -f -- '--kiosk' >/dev/null && echo "Chromium działa" || echo "nie działa (uruchomi się po zalogowaniu do pulpitu)"
+printf 'kiosk:    '
+if grep -Eqs '^[[:space:]]*KIOSK[[:space:]]*=[[:space:]]*0' .env; then echo "wyłączony (KIOSK=0): ekran z laptopa, http://lazik.local:8000"
+elif pgrep -f -- '--kiosk' >/dev/null; then echo "Chromium działa"
+else echo "nie działa (uruchomi się po zalogowaniu do pulpitu)"; fi
 printf 'temperatura: '; vcgencmd measure_temp 2>/dev/null | cut -d= -f2 || echo "?"
 # get_throttled: 0x0 = OK; bit 0/16 – za niskie napięcie, bit 2/18 – zwalnianie z powodu temperatury
 thr=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2)

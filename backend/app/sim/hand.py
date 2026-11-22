@@ -29,11 +29,24 @@ def _u(v: np.ndarray) -> np.ndarray:
     return v / n if n > 1e-9 else v
 
 
-def landmarks(palm_center: np.ndarray, toward_cam: np.ndarray, open_: bool, tilt: float = 0.0) -> np.ndarray:
+POSES = {                                   # cztery palce: wyprostowany? (wskazujący..mały)
+    "open": (True, True, True, True),
+    "fist": (False, False, False, False),
+    "scissors": (True, True, False, False),
+    "thumb": (False, False, False, False),  # kciuk w górę
+}
+
+
+def landmarks(palm_center: np.ndarray, toward_cam: np.ndarray, pose: str | bool = "open",
+              tilt: float = 0.0) -> np.ndarray:
     """21 punktów 3D [m] prawej dłoni zwróconej wnętrzem do kamery, palce do góry.
 
     toward_cam – kierunek, w który patrzy wnętrze dłoni (poziomo, do kamery).
+    pose – open | fist | scissors | thumb (True/False = open/fist).
     """
+    if isinstance(pose, bool):
+        pose = "open" if pose else "fist"
+    fingers_open = POSES[pose]
     up = np.array([0.0, 0.0, 1.0])
     F = _u(np.array([toward_cam[0], toward_cam[1], 0.0]))
     U = _u(up + F * tilt)                       # lekkie pochylenie palców
@@ -43,8 +56,11 @@ def landmarks(palm_center: np.ndarray, toward_cam: np.ndarray, open_: bool, tilt
 
     # kciuk
     cmc = wrist + U * 0.022 + T * 0.022 + F * 0.008
-    if open_:
+    if pose == "open":
         dirs = (_u(U * 0.45 + T * 0.85), _u(U * 0.6 + T * 0.75), _u(U * 0.75 + T * 0.6))
+    elif pose == "thumb":
+        cmc = wrist + U * 0.045 + T * 0.03 + F * 0.012
+        dirs = (_u(U * 0.75 + T * 0.4), _u(U * 0.95 + T * 0.1), _u(U))
     else:
         dirs = (_u(U * 0.5 + T * 0.5 + F * 0.35), _u(-T * 0.6 + U * 0.3 + F * 0.6), _u(-T * 0.95 + F * 0.15))
     p = cmc
@@ -54,10 +70,12 @@ def landmarks(palm_center: np.ndarray, toward_cam: np.ndarray, open_: bool, tilt
         pts.append(p)
 
     # cztery palce
-    for side, base_h, spread, lens in FINGERS:
+    for k, ((side, base_h, spread, lens), straight) in enumerate(zip(FINGERS, fingers_open)):
         mcp = wrist + U * base_h + T * side
+        if pose == "scissors" and k < 2:
+            spread = (15.0, -7.0)[k]                    # nożyce: wskazujący i środkowy w "V"
         a = math.radians(spread)
-        if open_:
+        if straight:
             d0 = _u(U * math.cos(a) + T * math.sin(a))
             dirs = (d0, d0, d0)
             lens = lens

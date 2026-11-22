@@ -17,6 +17,9 @@ Skopiowane są tylko pliki potrzebne w trybie **Edge, solo, model landmarków li
 
 1. `HandTrackerEdge.py`: zakomentowany nieużywany import `from numpy.lib.arraysetops import isin`
    (moduł nie istnieje w numpy 2.x; obraz i tak przypina numpy 1.26).
+2. `template_manager_script_solo.py` (skrypt na VPU): z dwóch dłoni wykrytych przez detektor brana jest
+   **większa, czyli bliższa kamery**, a nie tylko ta z najwyższą pewnością (oryginał: `detection[:8]`).
+   Dłoń opuszczona dalej od kamery nie przejmuje sterowania; potem tryb solo śledzi wybraną dłoń, dopóki jej nie zgubi.
 
 Nic więcej nie zmieniano. Kod jest używany przez `backend/app/hw/camera_worker.py`
 (klasa `HandTracker` z `HandTrackerEdge.py`, `xyz=True`, `use_gesture=True`).

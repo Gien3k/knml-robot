@@ -106,6 +106,10 @@ class CameraManager(threading.Thread):
         self.person_enabled = settings.oak_person_detect
         self.person_strikes = 0
         self.persons_active = False
+        # obraz głębi / podczerwieni na ekran: tak samo wyłączany, gdy kamera z nim nie wytrzymuje
+        self.vision_enabled = settings.vision_enable
+        self.vision_strikes = 0
+        self.vision_active = False
 
     def stop(self) -> None:
         self._halt.set()
@@ -113,12 +117,16 @@ class CameraManager(threading.Thread):
     def _cfg(self) -> dict:
         s = self.s
         return {"ht_dir": os.path.join(s.vendor_dir, "depthai_hand_tracker"), "lm_model": s.oak_lm_model,
-                "ir_dot": s.oak_ir_dot, "stream_fps": s.oak_stream_fps, "stream_width": s.stream_width,
+                "ir_dot": s.oak_ir_dot, "ir_always": s.oak_ir_always,
+                "stream_fps": s.oak_stream_fps, "stream_width": s.stream_width,
                 "jpeg_quality": s.jpeg_quality, "internal_fps": s.oak_internal_fps,
                 "force_fallback": s.oak_force_fallback, "hfov": s.oak_hfov_deg,
                 "near": s.hand_near_m, "far": s.hand_far_m,
                 "persons": self.person_enabled, "person_model": s.person_model,
-                "person_every_n": s.oak_person_every_n, "person_conf": s.oak_person_conf}
+                "person_every_n": s.oak_person_every_n, "person_conf": s.oak_person_conf,
+                "vision": self.vision_enabled, "vision_every_n": s.oak_vision_every_n,
+                "vision_width": s.vision_width, "ir_view_dot": s.oak_ir_view_dot,
+                "world_landmarks": s.oak_world_landmarks}
 
     def run(self) -> None:
         while not self._halt.is_set():
@@ -149,10 +157,14 @@ class CameraManager(threading.Thread):
         hub, s = self.hub, self.s
         ctx = mp.get_context("spawn")
         recv, send = ctx.Pipe(duplex=False)
-        proc = ctx.Process(target=camera_worker.main, args=(send, self._cfg()), daemon=True, name="oak")
+        ctrl_recv, ctrl_send = ctx.Pipe(duplex=False)          # rodzic -> kamera: wybór soczewki
+        proc = ctx.Process(target=camera_worker.main, args=(send, self._cfg(), ctrl_recv), daemon=True, name="oak")
         hub.set_device("oak", "sim", message="Uruchamiam kamerę…", starting=True)
         proc.start()
         send.close()
+        ctrl_recv.close()
+        sent_lens = None
+        sent_persons = None
         self.proc = proc
         spawn_t = time.monotonic()
         ready_t = 0.0
@@ -160,8 +172,24 @@ class CameraManager(threading.Thread):
         ready = False
         reason = ""
         self.persons_active = False
+        self.vision_active = False
         try:
             while not self._halt.is_set():
+                # widok (bramka głębi + projektor IR); projektor gaśnie poza widokiem głębi także bez bramki
+                if ready and hub.lens.get("lens") != sent_lens:
+                    sent_lens = hub.lens.get("lens")
+                    try:
+                        ctrl_send.send({"lens": sent_lens})
+                    except (BrokenPipeError, OSError):
+                        pass
+                # wykrywanie osób: wstrzymane w grze (tam nikogo nie zaznaczamy), poza grą działa
+                want = not bool((hub.game or {}).get("active"))
+                if ready and self.persons_active and want != sent_persons:
+                    sent_persons = want
+                    try:
+                        ctrl_send.send({"persons": want})
+                    except (BrokenPipeError, OSError):
+                        pass
                 if recv.poll(0.25):
                     try:
                         msg = recv.recv()
@@ -175,9 +203,11 @@ class CameraManager(threading.Thread):
                         ready, ready_t = True, now
                         self.mode = msg.get("mode")
                         self.persons_active = bool(msg.get("persons"))
+                        self.vision_active = bool(msg.get("vision"))
+                        sent_lens = sent_persons = None
                         self.fails = 0
                         hub.cam_info = {"mode": self.mode, "name": msg.get("name"), "usb": msg.get("usb"),
-                                        "persons": self.persons_active}
+                                        "persons": self.persons_active, "vision": self.vision_active}
                         hub.set_device("oak", "real", detail=f"{msg.get('name', '')} · USB {msg.get('usb', '?')}",
                                        message=msg.get("detail", ""))
                         hub.event("info" if self.mode == "nn" else "warn",
@@ -186,8 +216,12 @@ class CameraManager(threading.Thread):
                         hub.on_hand(msg.get("hand"), now, "oak")
                         hub.on_people(msg.get("people"), now, "oak")
                         hub.cam_info["fps"] = msg.get("fps")
+                        hub.cam_info["chip_c"] = msg.get("chip_c")
                         if msg.get("jpeg"):
                             hub.on_frame(msg["jpeg"], msg.get("w", 640), msg.get("h", 360))
+                    elif typ == "vision":
+                        if msg.get("jpeg"):
+                            hub.on_vision(msg["jpeg"], msg.get("lens", "depth"), msg.get("w", 960), msg.get("h", 540))
                     elif typ == "fatal":
                         reason = str(msg.get("msg", "błąd kamery"))[:200]
                         break
@@ -203,16 +237,18 @@ class CameraManager(threading.Thread):
                     break
         finally:
             self._kill(proc)
-            try:
-                recv.close()
-            except Exception:
-                pass
+            for c in (recv, ctrl_send):
+                try:
+                    c.close()
+                except Exception:
+                    pass
             self.proc = None
             hub.clear_camera()
         if self._halt.is_set():
             return
         if "No available devices" not in reason:     # wypięty kabel to nie wina detektora
             self._person_strike(ready, ready_t)
+            self._vision_strike(ready, ready_t)
         self.fails += 1
         delay = BACKOFF_S[min(self.fails - 1, len(BACKOFF_S) - 1)]
         self.next_try = time.monotonic() + delay
@@ -235,6 +271,20 @@ class CameraManager(threading.Thread):
         if self.person_strikes >= 2:
             self.person_enabled = False
             self.hub.event("warn", "OAK-D Pro: detekcja osób wyłączona – kamera z nią się nie utrzymuje")
+
+    def _vision_strike(self, ready: bool, ready_t: float) -> None:
+        """Kamera padła wkrótce po starcie z obrazem głębi -> po 2 razach wyłącz go (do restartu)."""
+        if not self.vision_enabled or not (ready and self.vision_active):
+            return
+        uptime = time.monotonic() - ready_t
+        if uptime >= 300:
+            self.vision_strikes = 0
+            return
+        if uptime < 60:
+            self.vision_strikes += 1
+        if self.vision_strikes >= 2:
+            self.vision_enabled = False
+            self.hub.event("warn", "OAK-D Pro: obraz głębi na ekran wyłączony – kamera z nim się nie utrzymuje")
 
     @staticmethod
     def _kill(proc) -> None:

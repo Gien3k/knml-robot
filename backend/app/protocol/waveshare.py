@@ -23,6 +23,10 @@ Ramki: jedna linia JSON zakończona '\\n', UART 115200 8N1.
   {"T":136,"cmd":<ms>}      heartbeat: brak komendy ruchu przez <ms> => firmware sam
                             zatrzymuje koła (dokumentacja: "wysyłaj komendy ruchu co 2-4 s",
                             przykład 3000 ms). Wysyłamy 20 Hz, więc zapas jest ogromny.
+  {"T":3,"lineNum":0,"Text":"..."}
+                            ekranik OLED 0,91" (4 linie, lineNum 0..3): własny tekst zastępuje
+                            ekran startowy; za długi tekst zawija się na następną linię
+  {"T":-3}                  przywrócenie domyślnego ekranu OLED
   odpowiedź: {"T":1001, "L":.., "R":.., "r":.., "p":.., "y":.., "v":.., ...}
             pola zależą od wersji firmware; "v" = napięcie zasilania.
 """
@@ -33,6 +37,8 @@ import json
 BAUD = 115200
 
 CMD_SPEED = 1
+CMD_OLED = 3
+CMD_OLED_DEFAULT = -3
 CMD_FEEDBACK_QUERY = 130
 CMD_FEEDBACK_FLOW = 131
 CMD_HEARTBEAT = 136
@@ -43,9 +49,12 @@ FB_BASE = 1001
 
 QUERY = b'{"T":130}\n'
 STOP = b'{"T":1,"L":0,"R":0}\n'
+OLED_DEFAULT = b'{"T":-3}\n'
+OLED_COLS = 21                  # 128 px / 6 px na znak
 
 # Komendy, które NIE poruszają kołami (bezpieczne do wysłania przy konfiguracji)
-NON_MOTION = {CMD_FEEDBACK_QUERY, CMD_FEEDBACK_FLOW, CMD_HEARTBEAT, CMD_FEEDBACK_INTERVAL, CMD_ECHO, CMD_CHASSIS}
+NON_MOTION = {CMD_FEEDBACK_QUERY, CMD_FEEDBACK_FLOW, CMD_HEARTBEAT, CMD_FEEDBACK_INTERVAL, CMD_ECHO, CMD_CHASSIS,
+              CMD_OLED, CMD_OLED_DEFAULT}
 
 RASPROVER = 1
 
@@ -53,6 +62,15 @@ RASPROVER = 1
 def chassis(main: int, module: int = 0) -> bytes:
     """Ustawienie typu podwozia (T:900) – pierwsza komenda po otwarciu portu."""
     return encode({"T": CMD_CHASSIS, "main": int(main), "module": int(module)})
+
+
+_PL = str.maketrans("ąćęłńóśźżĄĆĘŁŃÓŚŹŻ", "acelnoszzACELNOSZZ")
+
+
+def oled(line: int, text: str) -> bytes:
+    """Jedna linia ekraniku OLED (tylko ASCII – polskie znaki bez ogonków, przycięte do szerokości)."""
+    t = str(text).translate(_PL).encode("ascii", "replace").decode()[:OLED_COLS]
+    return encode({"T": CMD_OLED, "lineNum": max(0, min(3, int(line))), "Text": t})
 
 
 def encode(obj: dict) -> bytes:

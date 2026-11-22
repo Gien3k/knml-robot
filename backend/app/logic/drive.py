@@ -9,7 +9,13 @@ Stany (to, co widzi odwiedzający):
 
 Kinematyka skid-steer: L = v + w, R = v - w (w > 0 = obrót w prawo; używa go tylko
 "przywołanie"), obcięte do ±MAX_SPEED z zachowaniem proporcji.
-Rampa: 0 -> max w RAMP_UP_S, hamowanie 2x szybciej, STOP awaryjny bez rampy.
+Łagodny napęd (ochrona silników i przekładni N20):
+  * cel prędkości jest najpierw wygładzany (SMOOTH_S, bez szarpnięcia na starcie),
+  * potem rampa: 0 -> max w RAMP_UP_S, zwykłe hamowanie w RAMP_DOWN_S,
+  * zmiana kierunku: najpierw do zera, potem REVERSE_PAUSE_S postoju, dopiero potem w drugą stronę,
+  * zgubiony obraz z kamery: szybkie hamowanie w STOP_FAST_S,
+  * STOP awaryjny (tarcza LiDAR-u) i blokada sprzętowa: zero od razu, bez rampy.
+Ruchy kół w grze przechodzą przez te same ograniczenia.
 Watchdog: dane z kamery starsze niż PERCEPTION_TIMEOUT_S = brak dłoni.
 
 Moduł jest czysty (bez wątków i sprzętu) – testy podają czas jawnie.
@@ -28,7 +34,11 @@ IDLE, DRIVE, REVERSE, ESTOP = "IDLE", "DRIVE", "REVERSE", "ESTOP"
 @dataclass
 class DriveParams:
     max_speed: float = 0.5
-    ramp_up_s: float = 0.6
+    ramp_up_s: float = 1.6           # 0 -> max
+    ramp_down_s: float = 0.8         # max -> 0 (zwykłe zatrzymanie)
+    stop_fast_s: float = 0.3         # max -> 0, gdy kamera przestała nadawać
+    smooth_s: float = 0.2            # wygładzenie celu (miękki start, bez szarpnięć)
+    reverse_pause_s: float = 0.3     # postój przed zmianą kierunku
     hand_near_m: float = 0.35
     hand_far_m: float = 1.20
     min_throttle: float = 0.25
@@ -61,6 +71,8 @@ class DriveInputs:
     hand: HandObs | None
     shield_active: bool = False
     actuation_ok: bool = True      # czy koła mogą się ruszać (kamera/LiDAR/ESP32 OK)
+    # ruch kół narzucony przez grę (L, R) [m/s] – dłoń wtedy nie steruje; tarcza nadal ma pierwszeństwo
+    override: tuple[float, float] | None = None
 
 
 @dataclass
@@ -98,6 +110,40 @@ class DriveLogic:
         self._attract_until = 0.0
         self._attract_t0 = 0.0
         self._was_estop = False
+        # stan łagodnego napędu dla każdej strony: wygładzony cel, kierunek, chwila zatrzymania
+        self._side = {"l": {"smooth": 0.0, "dir": 0, "zero_t": -1e9}, "r": {"smooth": 0.0, "dir": 0, "zero_t": -1e9}}
+
+    def _hard_stop(self) -> None:
+        """Zero od razu (STOP awaryjny, blokada sprzętowa) – bez rampy."""
+        self.cmd_l = self.cmd_r = 0.0
+        for st in self._side.values():
+            st["smooth"] = 0.0
+
+    def _soft(self, side: str, cur: float, target: float, dt: float, now: float, fast: bool) -> float:
+        """Łagodna zmiana prędkości jednej strony (wygładzenie + rampa + postój przed zmianą kierunku)."""
+        p = self.p
+        st = self._side[side]
+        if fast:
+            st["smooth"] = target
+            up = p.max_speed / max(p.ramp_up_s, 1e-6)
+            down = p.max_speed / max(p.stop_fast_s, 1e-6)
+        else:
+            st["smooth"] += (target - st["smooth"]) * (1.0 - math.exp(-dt / max(p.smooth_s, 1e-6)))
+            if abs(st["smooth"] - target) < 0.002:
+                st["smooth"] = target
+            up = p.max_speed / max(p.ramp_up_s, 1e-6)
+            down = p.max_speed / max(p.ramp_down_s, 1e-6)
+        goal = st["smooth"]
+        if cur == 0.0 and goal != 0.0:
+            d = 1 if goal > 0 else -1
+            if st["dir"] not in (0, d) and now - st["zero_t"] < p.reverse_pause_s:
+                goal = 0.0                                  # chwila postoju przed zmianą kierunku
+        new = ramp(cur, goal, up, down, dt)
+        if new == 0.0 and cur != 0.0:
+            st["zero_t"] = now
+        if new != 0.0:
+            st["dir"] = 1 if new > 0 else -1
+        return new
 
     # ------------------------------------------------------------------
     def throttle_for(self, dist_m: float) -> float:
@@ -118,7 +164,7 @@ class DriveLogic:
         # ---------- 1. tarcza LiDAR: bezwzględny priorytet ----------
         if inp.shield_active:
             self._fill_request(inp, out)          # dla paska decyzji: co "chciała" kamera
-            self.cmd_l = self.cmd_r = 0.0
+            self._hard_stop()
             self._attract_until = 0.0
             self._last_activity = now
             out.state, out.sub = ESTOP, "shield"
@@ -126,6 +172,23 @@ class DriveLogic:
             self._was_estop = True
             return out
         self._was_estop = False
+
+        # ---------- 1b. gra: koła ruszają według gry – przez te same łagodne ograniczenia ----------
+        if inp.override is not None:
+            m = p.max_speed
+            lo, ro = inp.override if inp.actuation_ok else (0.0, 0.0)
+            lo, ro = max(-m, min(m, lo)), max(-m, min(m, ro))
+            if not inp.actuation_ok:
+                self._hard_stop()
+            self.cmd_l = self._soft("l", self.cmd_l, lo, dt, now, False)
+            self.cmd_r = self._soft("r", self.cmd_r, ro, dt, now, False)
+            self._attract_until = 0.0
+            self._last_activity = now
+            self._dist_ema = None
+            out.state, out.sub = IDLE, "game"
+            out.target_l, out.target_r = lo, ro
+            out.cmd_l, out.cmd_r = self.cmd_l, self.cmd_r
+            return out
 
         # ---------- 2. intencja z kamery ----------
         v = w = 0.0
@@ -168,14 +231,14 @@ class DriveLogic:
         # ---------- 4. blokada sprzętowa ----------
         if not inp.actuation_ok:
             left = right = 0.0
-            self.cmd_l = self.cmd_r = 0.0
+            self._hard_stop()
             self._attract_until = 0.0
         out.target_l, out.target_r = left, right
 
-        # ---------- 5. rampa ----------
-        up = p.max_speed / max(p.ramp_up_s, 1e-6)
-        self.cmd_l = ramp(self.cmd_l, left, up, 2.0 * up, dt)
-        self.cmd_r = ramp(self.cmd_r, right, up, 2.0 * up, dt)
+        # ---------- 5. łagodny napęd (szybkie hamowanie, gdy kamera przestała nadawać) ----------
+        fast = out.sub == "stale"
+        self.cmd_l = self._soft("l", self.cmd_l, left, dt, now, fast)
+        self.cmd_r = self._soft("r", self.cmd_r, right, dt, now, fast)
         out.cmd_l, out.cmd_r = self.cmd_l, self.cmd_r
         return out
 

@@ -10,6 +10,8 @@
 * STOP awaryjny: hub.estop_event budzi wątek natychmiast i wysyła zero 3 razy.
 * Brak odpowiedzi przez 1 s => zapytanie {"T":130}; przez 2 s => zwolnienie portu.
 * Wyjście z wątku (błąd, zatrzymanie) => zawsze próba wysłania stopu.
+* Ekranik OLED: hub.oled (4 linie, np. wynik gry) – wysyłane tylko zmienione linie, najwyżej
+  co OLED_MIN_S; None = ekran domyślny firmware'u (przywracany też po każdym połączeniu).
 """
 from __future__ import annotations
 
@@ -25,6 +27,8 @@ from .serial_util import open_port
 log = logging.getLogger("esp32")
 
 PERIOD_S = 0.05
+OLED_MIN_S = 0.25
+_UNSET = object()
 QUERY_AFTER_S = 1.0
 RELEASE_AFTER_S = 2.0
 
@@ -45,6 +49,8 @@ class Esp32Driver(threading.Thread):
         self.error: str | None = None
         self.sent = 0
         self.last_rx = 0.0
+        self._oled = _UNSET
+        self._oled_t = 0.0
 
     def stop(self) -> None:
         self._halt.set()
@@ -62,6 +68,23 @@ class Esp32Driver(threading.Thread):
             ser.write(waveshare.STOP)
             if i < times - 1:
                 time.sleep(0.01)
+
+    def _update_oled(self, ser, now: float) -> None:
+        if not self.s.oled:
+            return
+        want = self.hub.oled
+        want = None if want is None else [str(x) for x in want[:4]]
+        if want == self._oled or now - self._oled_t < OLED_MIN_S:
+            return
+        self._oled_t = now
+        if want is None:
+            ser.write(waveshare.OLED_DEFAULT)
+        else:
+            prev = self._oled if isinstance(self._oled, list) else [None] * 4
+            for i, line in enumerate(want):
+                if i >= len(prev) or prev[i] != line:
+                    ser.write(waveshare.oled(i, line))
+        self._oled = want
 
     def _loop(self) -> None:
         hub, s = self.hub, self.s
@@ -126,6 +149,7 @@ class Esp32Driver(threading.Thread):
                     next_tick += PERIOD_S
                     if next_tick < now - 0.25:          # zaległości (np. przycięcie systemu)
                         next_tick = now + PERIOD_S
+                    self._update_oled(ser, now)
 
                 # --- czy ESP32 żyje ---
                 silent = now - self.last_rx
@@ -137,6 +161,8 @@ class Esp32Driver(threading.Thread):
         finally:
             try:
                 self._send_stop(ser, 3)
+                if self._oled not in (_UNSET, None):
+                    ser.write(waveshare.OLED_DEFAULT)
             except Exception:
                 pass
             try:
